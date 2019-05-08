@@ -1,0 +1,236 @@
+APPENDIX
+A PSEUDO-CODE FOR KEY PROTOCOL STEPS
+
+A.1 Notation
+
+A.1.1 SST.
+
+1 column_name −> string | string[int] // e.g. wedged or latest_received_index[3]
+2 sst_row −> sst[row_rank]
+3 row_rank −> int
+4 sst_column −> sst[∗].column_name
+5 sst_entry −> sst_row.column_name // e.g. sst[0].stable_msg_index[0]
+
+A reducer function, for example, Min(sst_column) represents the minimum of all the entries
+of the column. Count(sst_column, value) counts the number of entries that are equal to value.
+MinNotFailed(sst_column) is a Min(NotFailed(sst_column)) where NotFailed is just a filtering
+function that removes the rows that are suspected, from the column.
+A rank of a member is the row number in the SST it owns.
+
+A.1.2 Message Ordering.
+
+The group is represented by G. The failed node set is denoted by F, F ⊆ G.
+Message : M(i,k) represents a message with i as the sender rank and k as the sender index.
+For example, the zeroth message by sender number 2 is M( 2 , 0 ) . We have a round robin ordering
+imposed on messages. M(i 1 ,k 1 ) < M(i 2 ,k 2 ) ⇐⇒ k 1 < k 2 ||(k 1 == k 2 ∧i 1 < i 2 ).
+The global index of M(i,k) , дi(M(i,k)) is the position of this message in the round-robin ordering.
+So M(0,0) has a global index of 0, M(1,0) has a global index of 1 and so on.
+It is easy to see that,
+дi(M(i,k)) = i ∗ |G| +k
+Conversely, if M(i,k) = д, then i = д mod |G|,k = д/|G|.
+
+A.1.3 Knowledge.
+
+P : a predicate.
+K me (P) : This process (“me”) knows that P is true.
+K S (P) : Every process in set S knows that P is true.
+K 1 (P) : Every process knows that P is true i.e. K G (P).
+K 2 (P) : Every process knows that every process knows that P is true i.e. K G (K G (P)).
+^P : Eventually, either P holds, or a failure occurs and the epoch termination protocol runs.
+Note that all of these are completely standard with the exception of ^P : in prior work on
+knowledge logics, there was no notion of an epoch termination and new-view protocol. This
+leads to an interesting line of speculation: should epoch-termination be modelled as a “first order”
+behavior, or treated as a “higher order” construct? Do the Derecho membership views function as a
+form of common knowledge, shared among processes to which the view was reported? We leave
+such questions for future study.
+
+
+A.2 Atomic multicast delivery in the steady state
+
+A.2.1 Receive.
+
+1 on recv(M(i,k)) {
+2 // |= K me (Received M(i,k))
+3 // store the message to deliver later
+4 msgs[дi(M(i,k))] = M(i,k);
+5 sst[my_rank].latest_received_index[i ] = k;
+6 // calculate global index of the message in the global round−robin ordering
+7 (min_index_received, lagging_node_rank) =
+8 (min,argmin) i sst[my_rank].latest_received_index[i];
+9 sst[my_rank].global_index = (min_index_received + 1) ∗ |G| + lagging_node_rank − 1;
+10 // |= K me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
+11 }
+
+A.2.2 Stability.
+
+1 always {
+2 sst[my_rank].stable_msg_index = Min{sst[∗].global_index}
+3 // |= K me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
+4 }
+
+A.2.3 Delivery.
+
+1 always {
+2 min_stable_msg_index = Min{sst[∗].stable_msg_index}
+3 // |= K me (^K 2 (“Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index”))
+4 for (msg : msgs) {
+5 if (msg.global_index <= min_stable_msg_index) {
+6 deliver_upcall(msg);
+7 msgs.remove(msg.global_index);
+8 }
+9 }
+10 sst[my_rank].latest_delivered_index = min_stable_msg_index
+11 }
+12 // |= K me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
+
+
+A.3 View change protocol
+
+A.3.1 Failure handling and leader proposing changes for next view.
+
+1 every 1 millisecond {
+2 post RDMA write with completion to every SST row that is not frozen
+3 if (no completion polled from row r) {
+4 sst.freeze(r);
+5 report_failure(r);
+6 }
+7 }
+
+1 report_failure (r) {
+2 // local node suspects node that owns row r
+3 sst[my_rank].suspected[r] = true;
+4 total_failed = Count(sst[∗].suspected, true);
+5 if (total_failed >= (num_members + 1)/2) {
+6 throw derecho_partitioning_exception;
+7 }
+8 }
+
+1 always {
+2 for (every row r and s) {
+3 if (sst[r].suspected[s] == true) {
+4 // failure propagation − the local node also suspects s
+5 sst[my_rank].suspected[s] = true;
+6 }
+7 }
+8
+9 for (s = 0; s < num_members; ++s) {
+10 // if s is newly suspected
+11 if (sst[my_rank].suspected[s] == true and curr_view.failed[s] == false) {
+12 freeze(s)
+13 report_failure(s);
+14 // mark s as failed in the current view
+15 curr_view.failed[s] = true;
+16 // |= s ∈ F
+17 // removes predicates defined in section 1 so that no new message can be sent or delivered
+18 curr_view.wedge();
+19 sst[my_rank].wedged = true;
+20 if (curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) {
+21 next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed;
+22 sst[my_rank].changes[next_change_index] = id of node owning s
+23 sst[my_rank].num_changes++;
+24 // |= proposed a new membership change and wedged the current view
+25 }
+26 }
+27 }
+28 }
+
+A.3.2 Terminating old view and installing new view after wedging.
+
+1 when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
+2 // |= leader proposed a new change
+3 if (curr_view.leader_rank , my_rank) {
+4 sst[my_rank].num_changes = sst[leader_rank].num_changes;
+5 // copy the entire changes vector from the leader's row
+6 sst[my_rank].changes = sst[leader_rank].changes;
+7 sst[my_rank].num_committed = sst[leader_rank].num_committed;
+8 curr_view.wedge();
+9 sst[my_rank].wedged = true;
+10 // |= acknowledged leader’s proposal and wedged the current view
+11 }
+12 }
+13
+14 when (curr_view.leader_rank == my_rank and
+15 MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
+16 // |= K U\F ( acknowledged a new proposal )
+17 sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
+18 // |= committed acknowledged proposals
+19 }
+20
+21 when (sst[my_rank].num_committed[leader_rank] > sst[my_rank].num_installed[my_rank]) {
+22 // |= leader committed a new membership change
+23 curr_view.wedge();
+24 sst[my_rank].wedged = true;
+25 when (LogicalAndNotFailed(sst[∗].wedged) == true) {
+26 // |= K U\F ( current view is wedged)
+27 terminate_epoch();
+28 }
+29 }
+30
+31 terminate_epoch() {
+32 // calculate next view membership
+33 committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
+34 next_view.members = curr_view.members;
+35 for (change_index = 0; change_index < committed_count; change_index++) {
+36 node_id = sst[my_rank].changes[change_index];
+37 // if node already a member, the change is to remove the node
+38 if (curr_view.contains(node_id) == true) {
+39 new_view.members.remove(node_id);
+40 }
+41 // otherwise the change is to add the node
+42 else {
+43 next_view.members.append(node_id);
+44 }
+45 }
+46 if (leader_rank == my_rank) {
+47 leader_ragged_edge_cleanup();
+48 }
+49 else {
+50 when (sst[leader_rank].ragged_edge_computed == true) {
+51 non_leader_ragged_edge_cleanup();
+52 }
+53 }
+54 curr_view = next_view;
+55 // |= New view installed
+56 }
+
+1 leader_ragged_edge_cleanup() {
+2 if (LogicalOr(sst[∗].ragged_edge_computed) == true) {
+3 Let rank be s.t. sst[rank].ragged_edge_computed is true
+4 // copy min_latest_received from the node that computed the ragged edge
+5 for (n = 0; n < |G|; ++n) {
+6 sst[my_rank].min_latest_received[n] = sst[rank].min_latest_received[n];
+7 }
+8 sst[my_rank].ragged_edge_computed = true;
+9 }
+10 else {
+11 for (n = 0; n < |G|; ++n) {
+12 sst[my_rank].min_latest_received[n] = Min(sst[∗].latest_received_index[n]);
+13 // |= K me ( sst[my_rank].min_latest_received[n] number of messages from n are safe for delivery)
+14 }
+15 sst[my_rank].ragged_edge_computed = true;
+16 }
+17
+18 deliver_in_order();
+19 }
+20
+21 non_leader_ragged_edge_cleanup() {
+22 // copy from the leader
+23 for (n = 0; n < |G|; ++n) {
+24 sst[my_rank].min_latest_received[n] = sst[leader_rank].min_latest_received[n];
+25 }
+26 sst[my_rank].ragged_edge_computed = true;
+27 deliver_in_order();
+28 }
+29
+30 deliver_in_order() {
+31 curr_global_index = sst[my_rank].latest_delivered_index;
+32 max_global_index = max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
+33 for (global_index = curr_global_index + 1; global_index <= max_global_index; ++
+global_index) {
+34 sender_index = global_index / |G|;
+35 sender_rank = global_index % |G|;
+36 if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
+37 deliver_upcall(msgs[global_index]);
+38 }
+39 }
+40 }
