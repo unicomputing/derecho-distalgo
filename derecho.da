@@ -1,0 +1,291 @@
+import sys
+import random
+
+class SSTRow:
+	def __init__(self, nprocess):
+		self.row = {}
+		self.row['suspected'] = [False] * nprocess
+		self.row['proposal'] = [0] * nprocess
+		self.row['num_committed'] = 0
+		self.row['num_acked'] = 0
+		self.row['nreceived'] = [0] * nprocess
+		self.row['wedged'] = False
+		self.row['changes'] = []
+		self.row['num_changes'] = 0
+		self.row['num_installed'] = 0
+
+class View():
+	def __init__(self, nprocess, leader_rank=0):
+		self.curr_view = {}
+		self.curr_view['max_rank'] = nprocess
+		self.curr_view['leader_rank'] = 0
+		self.curr_view['failed'] = [False] * nprocess
+		self.curr_view['wedged'] = False
+		self.curr_view['members'] = [None] * nprocess
+
+
+class Node(process):
+	'''
+	Simulate RDMA based write
+	'''
+	def write_sst(row, attr, val, index=None):
+		
+		#update the local SST
+		if index is not None:
+			sst[row][attr][index] = val
+		else:
+			sst[row][attr] = val
+		message =  ('rdma_write_sst', row, attr, val, index)
+		output("sending message: " , message, " to ", (nodes-set([self])))
+		send(message, to=(nodes-set([self])))
+
+	#TODO implement across usecases
+	def write_view(attr, val, index=None, cast=True):
+		#update the local view
+		if index is not None:
+			curr_view[attr][index] = val
+		else:
+			curr_view[attr] = val
+		if cast:
+			send(('rdma_write_view', attr, val, index), to=(nodes-set([self])))
+
+	def min_not_failed(attr):
+		vals = set()
+		for i in range(len(sst)):
+			#output("MIN SST ", sst)
+			if not sst[my_rank]['suspected'][i]:
+				vals.add(sst[i][attr])
+		if len(vals) == 0:
+			return None
+		else:
+			return min(vals)
+
+	def logical_and_not_failed(attr):
+		val = True
+		for i in range(len(sst)):
+			#output("MIN SST ", sst)
+			if not sst[my_rank]['suspected'][i]:
+				val = val and sst[i][attr]
+		return val
+
+
+
+	def setup(nodes, nprocess, my_rank):
+		self.sst = [SSTRow(nprocess).row]*nprocess
+		self.sent_num = -1
+		self.curr_view = View(nprocess).curr_view
+		write_view('members', self, my_rank)
+
+	def run():
+		output(sst[0]['nreceived'])
+		output("my_rank: ", str(my_rank))
+		while True:
+			if await(received(('end'))):
+				break
+			elif await((sst[curr_view['leader_rank']]['num_changes'] > sst[my_rank]['num_acked']) and my_rank != curr_view['leader_rank']):
+				#output("to pro ", sst[curr_view['leader_rank']]['num_changes'] , " > " ,  sst[my_rank]['num_acked'])
+				new_proposal()
+			elif await((my_rank == curr_view['leader_rank']) and (min_not_failed('num_acked') > sst[my_rank]['num_committed'])):
+				commit_proposal_leader()
+			elif await(sst[curr_view['leader_rank']]['num_committed'] > sst[my_rank]['num_installed']):
+				install_new_view()
+			elif timeout(7):
+				send(('end'), to=parent())
+
+		output("SST: ", sst)
+		output("view: ", curr_view)
+		output('terminating NODES')
+
+	'''
+	local node suspects node that owns the row r
+	'''
+	def report_failure(r):
+		output("in report failure")
+		write_sst(my_rank, 'suspected', True, r)
+		#TODO only one knows
+		#send(('suspect'), to=nodes)
+		suspect()
+		#send(('end'), to=parent())
+
+	'''
+	returns the node that r believes to be the leader, on the basis of the current sst
+	'''
+	def find_new_leader(my_rank):
+		for i in range(len(sst)):
+			if sst[my_rank]['suspected'][i]:
+				continue
+			else:
+				return i
+	'''
+	wait until all non-suspected nodes comsider me to be the leader.
+	implies that the new leader takes action only after every healthy node has
+		pushed final nReceived data to it
+	'''
+	def leader_selection():
+		new_leader = find_new_leader(my_rank)
+		if new_leader != curr_view['leader_rank'] and new_leader == my_rank:
+			all_others_agree = True
+			while find_new_leader(my_rank) == my_rank:
+				for r in range(len(sst)):
+					if not sst[my_rank]['suspected'][r]:
+						all_others_agree = all_others_agree and (find_new_leader(r) == my_rank)
+				if all_others_agree:
+					#Scan sst to learn prior proposals
+					write_view('leader_rank', my_rank)
+					#curr_view['leader_rank'] = my_rank
+					#write_view
+					break
+
+	def suspect():
+		for r in range(len(sst)):
+			for s in range(len(sst)):
+				if sst[r]['suspected'][s]:
+					# failure propagation, local node also suspects s
+					# and updates it SST row
+					write_sst(my_rank, 'suspected', True, s)
+
+		for s in range(len(sst)):
+			# if s is newly suspected
+			if sst[my_rank]['suspected'][s] and (not curr_view['failed'][s]):
+				#freeze(s)
+				#report_failure(s)
+				# mark s as failed in the current view
+				curr_view['failed'][s] = True
+				curr_view['wedged'] = True
+				write_sst(my_rank, 'wedged', True)
+
+				leader_selection() #TODO verify if to be called herE?
+
+				if curr_view['leader_rank'] == my_rank and (s not in sst[my_rank]['changes'])	:
+					next_change_index = sst[my_rank]['num_changes'] - sst[my_rank]['num_installed']
+					#not required in python for position
+					#sst[my_rank]['changes'][next_change_index] = s #id of node owning S
+					changes = sst[my_rank]['changes']
+					changes.append(s)
+					write_sst(my_rank, 'changes', changes)
+					#sst[my_rank]['changes'].append(s) #id of node owning S
+					num_changes = sst[my_rank]['num_changes'] + 1
+					write_sst(my_rank, 'num_changes', num_changes)
+					#sst[my_rank]['num_changes'] += 1
+					#proposed a new membership change and wedged the current view
+
+		
+
+	'''
+	calculate next view membership
+	'''
+	def terminate_epoch():
+		leader_rank = curr_view['leader_rank']
+		sst[my_rank]['num_installed'] = sst[leader_rank]['num_committed']
+		next_view = View(nprocess - len(sst[my_rank]['changes'])).curr_view
+		next_view['leader_rank'] = curr_view['leader_rank']
+		next_view['members'] = []
+		for n in range(len(curr_view['members'])):
+			if n not in sst[my_rank]['changes']:
+				next_view['members'].append(curr_view['members'][n])
+		if leader_rank == my_rank:
+			output("leader_ragged_edge_cleanup ")
+		else:
+			output("non_leader_ragged_edge_cleanup()")
+
+		#new view installed
+		curr_view = next_view
+
+	def new_proposal():
+		
+		output("leader proposed a new change")
+		leader_rank = curr_view['leader_rank']
+		if sst[leader_rank]['num_changes'] > sst[my_rank]['num_acked']:
+			#leader proposed a new change
+			if leader_rank != my_rank:
+				#sst[my_rank]['num_acked'] = sst[leader_rank]['num_changes']
+				write_sst(my_rank, 'num_acked', sst[leader_rank]['num_changes'])
+				#sst[my_rank]['num_changes'] = sst[leader_rank]['num_changes']
+				write_sst(my_rank, 'num_changes', sst[leader_rank]['num_changes'])
+				#copy entire changes from the leader's row
+				#sst[my_rank]['changes'] = sst[leader_rank]['changes']
+				write_sst(my_rank, 'changes', sst[leader_rank]['changes'])
+				#sst[my_rank]['num_committed'] = sst[leader_rank]['num_committed']
+				write_sst(my_rank, 'num_committed', sst[leader_rank]['num_committed'])
+				curr_view['wedged'] = True
+				write_sst(my_rank, 'wedged', True)
+				# acknowledged leader's proposal and wedged the current view
+		#send(('end'), to=parent())
+
+	def commit_proposal_leader():
+		#acknowledge a new proposal
+		#sst[my_rank]['num_committed'] = min_not_failed('num_acked')
+		output("commit_proposal_leader")
+		write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))
+		#commited acknowledged proposals
+
+
+
+	def install_new_view():
+		# leader committed a new membership change
+		curr_view['wedged'] = True
+		write_sst(my_rank, 'wedged', True)
+		await(logical_and_not_failed('wedged'))
+		output("terminate epoch")
+			#TODO condition, LogicalAndNotFailed(sst[*].wedged == true)
+		terminate_epoch()
+
+
+	'''
+	Receives a failure trigger
+	This is to simulate: polling on the SST table for not receving a message for a time-period 
+		from one of the servers
+	'''
+	def receive(msg= ('failure', r)):
+		if r != my_rank:
+			output("Received failure of ", r)
+			report_failure(r)
+	
+
+	def receive(msg = ('rdma_write_sst', row, attr, val, index)):
+		#write_sst(row, attr, val, index, False)
+		#update the local SST
+		output("Received message:" , ('rdma_write_sst', row, attr, val, index))
+		if index is not None:
+			sst[row][attr][index] = val
+		else:
+			sst[row][attr] = val
+
+	def receive(msg = ('rdma_write_view', attr, val, index)):
+		#update the local view
+		output("Received message:" , ('rdma_write_view', attr, val, index))
+		if index is not None:
+			curr_view[attr][index] = val
+		else:
+			curr_view[attr] = val
+
+
+class Sim(process):
+	def setup(nodes):
+		pass
+	
+	def run():
+		output(nodes)
+		#failing last node
+		send(('failure', len(nodes)-1), to= nodes)
+		output("Sent failure message to nodes")
+		await(received(('end')))
+		output('terminating SIM')
+
+
+def main():
+	nprocess = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+
+	#TODO start View
+	nodes = new(Node, num= nprocess)
+	rank = 0
+	for n in nodes:
+		setup(n, (nodes, nprocess,rank,))
+		rank += 1
+	start(nodes)
+	sim = new(Sim, (nodes,), num=1)
+	start(sim)
+	await(len(setof(a, received(('end'), from_ =a))) == len(nodes) - 1)
+	#each(n in nodes, has=received(('end'), from_=n)))
+	send(('end'), to=(sim|nodes))
+	#await(each(s in (sim|nodes), has=received(('end',), from_=s)))
