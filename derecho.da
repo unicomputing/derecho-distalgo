@@ -10,8 +10,6 @@ import random
 '''
 A list of SSTRows form a Shared State Table (SST)
 A copy of the SST is stored by each Node
-
-getattr(x, 'foobar') is equivalent to x.foobar.   setattr(x, 'foobar', 123) is equivalent to x.foobar = 123.
 '''
 class SSTRow:
 	def __init__(self, nprocess):
