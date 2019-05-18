@@ -8,545 +8,545 @@ import random
 
 
 class Slot:
-	def __init__(self):
-		self.index = -1
-		self.size = 0
-		self.buf = None
+  def __init__(self):
+    self.index = -1
+    self.size = 0
+    self.buf = None
 
 '''
 A list of SSTRows form a Shared State Table (SST)
 A copy of the SST is stored by each Node
 SST as per A.1.1 SST
 '''
-																			# column_name->string|string[int] //e.g. wedged or latest_received_index[3]
-																			# sst_row->sst[row_rank]
-																			#row_rank->int
-																			# sst_column->sst[*].column_name
-																			# sst_entry->sst_row.column_name //e.g. sst[0].stable_msg_index[0]
+                                      # column_name->string|string[int] //e.g. wedged or latest_received_index[3]
+                                      # sst_row->sst[row_rank]
+                                      #row_rank->int
+                                      # sst_column->sst[*].column_name
+                                      # sst_entry->sst_row.column_name //e.g. sst[0].stable_msg_index[0]
 class SSTRow:                                                             # IMPROV --- The variables and their initial values are not explicitly mentioned in the Paper
-	def __init__(self, nprocess, window_size):
-		self.suspected = [False] * nprocess
-		self.proposal = [0] * nprocess
-		self.num_committed = 0
-		self.num_acked = 0
-		self.received_num = [0] * nprocess
-		self.wedged = False
-		self.changes = []
-		self.num_changes = 0
-		self.num_installed = 0
-		self.min_latest_received = [-1] * nprocess
-		self.latest_received_index = [-1]*nprocess
-		self.ragged_edge_computed = True
-		self.latest_delivered_index = -1
-		self.global_index = -1
-		self.slots = [Slot()]*window_size
-		self.node = None
+  def __init__(self, nprocess, window_size):
+    self.suspected = [False] * nprocess
+    self.proposal = [0] * nprocess
+    self.num_committed = 0
+    self.num_acked = 0
+    self.received_num = [0] * nprocess
+    self.wedged = False
+    self.changes = []
+    self.num_changes = 0
+    self.num_installed = 0
+    self.min_latest_received = [-1] * nprocess
+    self.latest_received_index = [-1]*nprocess
+    self.ragged_edge_computed = True
+    self.latest_delivered_index = -1
+    self.global_index = -1
+    self.slots = [Slot()]*window_size
+    self.node = None
 
 
 '''
 A view holds the metadata of an epoch
 '''
-class View(): 															# IMPROV This Data structure is not mentioned in the psuecode, but used
-	def __init__(self, nprocess, leader_rank=0):
-		self.max_rank = nprocess
-		self.leader_rank = 0
-		self.failed = [False] * nprocess
-		self.wedged = False
-		self.members = [None] * nprocess
+class View():                               # IMPROV This Data structure is not mentioned in the psuecode, but used
+  def __init__(self, nprocess, leader_rank=0):
+    self.max_rank = nprocess
+    self.leader_rank = 0
+    self.failed = [False] * nprocess
+    self.wedged = False
+    self.members = [None] * nprocess
 
 
 class Node(process):
-	'''
-	- Simulate RDMA based write to an SST
-	- Every Node owns a row in the SST and is the only writer 
-	- Every local update to a cell has to be multicasted to all other Nodes to update their copy of the row
-	- Derecho uses RDMA to update across Nodes, we simulate this uing the below functions write_sst and write_view
-	- Every update to a cell is written locally and then multicasted to all Nodes for them to update their local copies
-	'''
-	def write_sst(row, attr, val, index=None):
-		#update the local SST
-		if index is not None:
-			newval = getattr(sst[row], attr)
-			newval[index] = val
-			setattr(sst[row], attr, newval) 
-		else:
-			setattr(sst[row], attr, val) 
-		message =  ('rdma_write_sst', row, attr, val, index)
-		# output("sending message: " , message, " to ", (nodes-set([self])))
-		# Cast the update message to all the Nodes
-		send(message, to=(nodes-set([self])))
+  '''
+  - Simulate RDMA based write to an SST
+  - Every Node owns a row in the SST and is the only writer 
+  - Every local update to a cell has to be multicasted to all other Nodes to update their copy of the row
+  - Derecho uses RDMA to update across Nodes, we simulate this uing the below functions write_sst and write_view
+  - Every update to a cell is written locally and then multicasted to all Nodes for them to update their local copies
+  '''
+  def write_sst(row, attr, val, index=None):
+    #update the local SST
+    if index is not None:
+      newval = getattr(sst[row], attr)
+      newval[index] = val
+      setattr(sst[row], attr, newval) 
+    else:
+      setattr(sst[row], attr, val) 
+    message =  ('rdma_write_sst', row, attr, val, index)
+    # output("sending message: " , message, " to ", (nodes-set([self])))
+    # Cast the update message to all the Nodes
+    send(message, to=(nodes-set([self])))
 
-	def write_view(attr, val, index=None):
-		#update the local view
-		if index is not None:
-			newval = getattr(curr_view, attr)
-			newval[index] = val
-			setattr(curr_view, attr, newval) 
-		else:
-			setattr(curr_view, attr, val) 
-		# Cast the update message to all the Nodes
-		send(('rdma_write_view', attr, val, index), to=(nodes-set([self])))
+  def write_view(attr, val, index=None):
+    #update the local view
+    if index is not None:
+      newval = getattr(curr_view, attr)
+      newval[index] = val
+      setattr(curr_view, attr, newval) 
+    else:
+      setattr(curr_view, attr, val) 
+    # Cast the update message to all the Nodes
+    send(('rdma_write_view', attr, val, index), to=(nodes-set([self])))
 
-	'''
-	- A reducer function
-	- Calculates the min value for a columnn for non-failed Nodes in an SST
-	- Column to be passed an a paramter
-	'''
-	def min_not_failed(attr):
-		vals = set()
-		for i in range(len(sst)):
-			#output("MIN SST ", sst)
-			if not sst[my_rank].suspected[i]:
-				vals.add(getattr(sst[i], attr))
-		if len(vals) == 0:
-			return None
-		else:
-			return min(vals)
+  '''
+  - A reducer function
+  - Calculates the min value for a columnn for non-failed Nodes in an SST
+  - Column to be passed an a paramter
+  '''
+  def min_not_failed(attr):
+    vals = set()
+    for i in range(len(sst)):
+      #output("MIN SST ", sst)
+      if not sst[my_rank].suspected[i]:
+        vals.add(getattr(sst[i], attr))
+    if len(vals) == 0:
+      return None
+    else:
+      return min(vals)
 
-	'''
-	- A reducer function
-	- Calculates the min value for a column for all Nodes in an SST
-	'''
-	def _min(attr, index=None):
-		vals = set()
-		for i in range(len(sst)):
-			#output("MIN SST ", sst)
-			if index is None:
-				vals.add(getattr(sst[i], attr))
-			else:
-				vals.add((getattr(sst[i], attr))[index])
+  '''
+  - A reducer function
+  - Calculates the min value for a column for all Nodes in an SST
+  '''
+  def _min(attr, index=None):
+    vals = set()
+    for i in range(len(sst)):
+      #output("MIN SST ", sst)
+      if index is None:
+        vals.add(getattr(sst[i], attr))
+      else:
+        vals.add((getattr(sst[i], attr))[index])
 
-		if len(vals) == 0:
-			return None
-		else:
-			return min(vals)
+    if len(vals) == 0:
+      return None
+    else:
+      return min(vals)
 
-	'''
-	- A reducer function
-	- Calculates the the logical AND of all values in a columnn for non-failed Nodes in an SST
-	- Column to be passed an a paramter
-	'''
-	def logical_and_not_failed(attr):
-		val = True
-		for i in range(len(sst)):
-			#output("MIN SST ", sst)
-			if not sst[my_rank].suspected[i]:
-				val = val and getattr(sst[i], attr)
-		return val
+  '''
+  - A reducer function
+  - Calculates the the logical AND of all values in a columnn for non-failed Nodes in an SST
+  - Column to be passed an a paramter
+  '''
+  def logical_and_not_failed(attr):
+    val = True
+    for i in range(len(sst)):
+      #output("MIN SST ", sst)
+      if not sst[my_rank].suspected[i]:
+        val = val and getattr(sst[i], attr)
+    return val
 
-	'''
-	- A reducer function
-	- Calculates the the logical OR of all values in a columnn in an SST
-	- Column to be passed an a paramter
-	'''
-	def logical_or(attr):
-		val = False
-		for i in range(len(sst)):
-				val = val or getattr(sst[i], attr)
-		return val
+  '''
+  - A reducer function
+  - Calculates the the logical OR of all values in a columnn in an SST
+  - Column to be passed an a paramter
+  '''
+  def logical_or(attr):
+    val = False
+    for i in range(len(sst)):
+        val = val or getattr(sst[i], attr)
+    return val
 
-	'''
-	- A reducer function
-	- Calculates the min row with a given value for a column in the SST
-	- Column and value to be checked against to be passed an a paramter
-	'''
-	def min_with_val(attr, value):
-		for i in range(len(sst)):
-			if getattr(sst[i], attr) == value:
-				return i
-		return None
+  '''
+  - A reducer function
+  - Calculates the min row with a given value for a column in the SST
+  - Column and value to be checked against to be passed an a paramter
+  '''
+  def min_with_val(attr, value):
+    for i in range(len(sst)):
+      if getattr(sst[i], attr) == value:
+        return i
+    return None
 
-	'''
-	- A reducer function
-	- Calculates the count of rows with a given value for a column
-	- Column name and the value to be passed an a paramter
-	'''
-	def Count(attr, val):
-		count = 0
-		for i in range(len(sst)):
-			if getattr(sst[i], attr) == val:
-				count += 1 
-		return count
+  '''
+  - A reducer function
+  - Calculates the count of rows with a given value for a column
+  - Column name and the value to be passed an a paramter
+  '''
+  def Count(attr, val):
+    count = 0
+    for i in range(len(sst)):
+      if getattr(sst[i], attr) == val:
+        count += 1 
+    return count
 
-	'''
-	max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
-	'''
-	def get_max_gi():
-		if len(G) < 1:
-			return 0
-		val = sst[my_rank].min_latest_received[0] * len(G) + 0
-		for n in range(len(G)):
-			val = max(val, (sst[my_rank].min_latest_received[n] * len(G) + n))
-		return val
+  '''
+  max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
+  '''
+  def get_max_gi():
+    if len(G) < 1:
+      return 0
+    val = sst[my_rank].min_latest_received[0] * len(G) + 0
+    for n in range(len(G)):
+      val = max(val, (sst[my_rank].min_latest_received[n] * len(G) + n))
+    return val
 
-	'''
-	Calculate the global index of a message
-	'''
-	def gi(i, k):
-		return (i*len(G))+k 														# gi (M(i, k)) = i ∗ |G| + k
+  '''
+  Calculate the global index of a message
+  '''
+  def gi(i, k):
+    return (i*len(G))+k                             # gi (M(i, k)) = i ∗ |G| + k
 
-	'''
-	A.2.2
-	Initialization
-	'''
-	def setup(nodes, nprocess, my_rank, window_size):
-																					# for i in 1 to n {
-		# the idea is replicated below												# 	for j in 1 to n {
-																					#		sst[i].received_num[j] = -1
-																					#	for k in 1 to window_size {
-																					#		sst[i].slots[k].buf = nullptr
-																					#		sst[i].slots[k].index = 0 }}
-		self.sst = [SSTRow(nprocess, window_size)]*nprocess
-		self.sent_num = -1 										# sent_num = -1
-		self.curr_view = View(nprocess)
-		self.G = nodes
-		self.msgs = {}
-		self.max_msg_size = 10
-		write_view('members', self, my_rank)
-		write_sst(my_rank, 'node', self)
-		output("s:", sst[0].node, sst[1].node, sst[2].node)
+  '''
+  A.2.2
+  Initialization
+  '''
+  def setup(nodes, nprocess, my_rank, window_size):
+                                          # for i in 1 to n {
+    # the idea is replicated below                        #   for j in 1 to n {
+                                          #    sst[i].received_num[j] = -1
+                                          #  for k in 1 to window_size {
+                                          #    sst[i].slots[k].buf = nullptr
+                                          #    sst[i].slots[k].index = 0 }}
+    self.sst = [SSTRow(nprocess, window_size)]*nprocess
+    self.sent_num = -1                     # sent_num = -1
+    self.curr_view = View(nprocess)
+    self.G = nodes
+    self.msgs = {}
+    self.max_msg_size = 10
+    write_view('members', self, my_rank)
+    write_sst(my_rank, 'node', self)
+    output("s:", sst[0].node, sst[1].node, sst[2].node)
 
-	def run():
-		output("my_rank: ", str(my_rank))
-		while True:
-			if await(received(('end'))):
-				break
-			elif await((sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked) and my_rank != curr_view.leader_rank):		# A.4.2 when (sst[leader_rank].num_changes > sst[my_rank].num_acked); if(curr_view.leader_rank != my_rank)
-				new_proposal()
-			elif await((my_rank == curr_view.leader_rank) and (min_not_failed('num_acked') > sst[my_rank].num_committed)): 				# A.4.2 when (curr_view.leader_rank == my_rank and MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) 
-				commit_proposal_leader()
-			elif await(sst[curr_view.leader_rank].num_committed > sst[my_rank].num_installed): 																		# A.4.2 when (sst[my_rank].num_committed[leader_rank] > sst[my_rank].num_installed[my_rank]) 
-				install_new_view()
-			elif timeout(4): 																																																			# IMPROV
-				receive_msg() # always - but  called only once to help terminate
-				stability_delivery() # always - but  called only once to help terminate
-				send(('end'), to=parent())
-		#output("SST: ", sst)
-		output("Final agreed new view: ", curr_view.members)
-		output('terminating NODES')
-
-
-	'''
-	A.2.3 Sending. First the sending node reserved one of the slots:
-	'''
-	def get_buffer(msg_size): 											# char* get_buffer(mesg_size){
-		output("get_buffer")
-		if msg_size > max_msg_size: 									# assert(msg_size <= max_msg_size);
-			return None
-		# A Slot can be reused if the previos message in that slot was received by everyone
-		# Combine it with the FIFO ordering of messages
-		completed_num = _min("received_num", my_rank) # completed_num = Min{sst[*].received_num[my_rank]};
-		if (sent_num - completed_num) < window_size: 	# if(sent_num - completed_num < window_size){
-			return None 												# 	return nullptr;
-		slot = (sent_num+1)%window_size 							# slot = (sent_num + 1)%window_size;
-		sst[my_rank].slots[slot].size = msg_size 			# sst[my_rank].slots[slot].size = msg_size;
-		return sst[my_rank].slots[slot].buf 					# return sst[my_rank].slots[slot].buf;
-	
-	def send_msg(): 																# void send(){
-		output("send_msg")
-		slot = (sent_num + 1)%window_size 						# slot = (sent_num + 1)%window_size
-		nSlot = sst[my_rank].slots[slot]
-		nSlot.index = sst[my_rank].slots[slot].index+1
-		write_sst(my_rank, "slots", nSlot, slot) 			# sst[my_rank].slots[slot].index++;
-		sent_num += 1 																# sent_num++;
-
-	
-	'''
-	A.2.4 Receiving
-	'''
-	#always
-	def receive_msg():
-		output("receive_msg")
-		for i in range(nprocess): 																												# for i in 1 to n {
-			slot = (sst[my_rank].received_num[i]+1)%window_size 														#	slot = (sst[my_rank].received_num[i]+1)%window_size
-		if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1):	#	if(sst[si].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1)){
-			write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)						#		++sst[my_rank].received_num[i];
-			recv((i, sst[my_rank].received_num[i])) 																				#		recv(M(i, sst[my_rank].received_num[i])); }}
-
-	
-	def get_min_idx_rec(): 															# (min,argmin) i sst[my_rank].latest_received_index[i];
-		min_ind = sst[my_rank].latest_received_index[0]
-		lagging_node = 0
-		for i in range(1, nprocess):
-			if sst[my_rank].latest_received_index[i] < min_ind:
-				min_ind = sst[my_rank].latest_received_index[i]
-				lagging_node = i
-		return min_ind,lagging_node
-
-	'''
-	A.3 Atomic Multicast Delivery in the Steady Stat
-	A.3.1 Receive
-	'''
-	def recv(M):					 																# on recv(M(i,k)) {
-		output("recv")
-		(i, k) = M
-		# store the message to deliver later
-		msgs[gi(i, k)] = (i, k) 														# msgs[дi(M(i,k))] = M(i,k);
-		write_sst(my_rank, "latest_received_index", k, i)		# sst[my_rank].latest_received_index[i ] = k;		
-		# calculate global index of the message in the global round−robin ordering
-		min_index_received, lagging_node_rank = get_min_idx_rec() 																	# (min_index_received, lagging_node_rank) = (min,argmin) i sst[my_rank].latest_received_index[i];	
-		write_sst(my_rank, "global_index", ((min_index_received + 1)*len(G)+lagging_node_rank-1))		# sst[my_rank].global_index = (min_index_received + 1) ∗ |G| + lagging_node_rank − 1;
-		# // |= K me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
-
-	def deliver_upcall(message):
-				output(" deliver_upcall ", message)																	# IMPROV: No implementation provided in the pseudocode
+  def run():
+    output("my_rank: ", str(my_rank))
+    while True:
+      if await(received(('end'))):
+        break
+      elif await((sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked) and my_rank != curr_view.leader_rank):    # A.4.2 when (sst[leader_rank].num_changes > sst[my_rank].num_acked); if(curr_view.leader_rank != my_rank)
+        new_proposal()
+      elif await((my_rank == curr_view.leader_rank) and (min_not_failed('num_acked') > sst[my_rank].num_committed)):         # A.4.2 when (curr_view.leader_rank == my_rank and MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) 
+        commit_proposal_leader()
+      elif await(sst[curr_view.leader_rank].num_committed > sst[my_rank].num_installed):                                     # A.4.2 when (sst[my_rank].num_committed[leader_rank] > sst[my_rank].num_installed[my_rank]) 
+        install_new_view()
+      elif timeout(4):                                                                                                       # IMPROV
+        receive_msg() # always - but  called only once to help terminate
+        stability_delivery() # always - but  called only once to help terminate
+        send(('end'), to=parent())
+    #output("SST: ", sst)
+    output("Final agreed new view: ", curr_view.members)
+    output('terminating NODES')
 
 
-	'''
-	A.3.2 Stability and Delivery
-	'''
-	#always
-	def stability_delivery():
-		stable_msg_index = _min("global_index") 	# stable_msg_index = Min{sst[∗].global_index}
-		# // |= K me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
-		for msg in msgs: 													# for (msg : msgs) {
-			if msg <= stable_msg_index: 						# 	if (msg.global_index <= min_stable_msg_index) {
-				deliver_upcall(msgs[msg]) 						# 		deliver_upcall(msg);
-				del msgs[msg] 												# 		msgs.remove(msg.global_index);
-		write_sst(my_rank, "latest_delivered_index", stable_msg_index) 	# sst[my_rank].latest_delivered_index = stable_msg_index
-		# // |= K me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
+  '''
+  A.2.3 Sending. First the sending node reserved one of the slots:
+  '''
+  def get_buffer(msg_size):                       # char* get_buffer(mesg_size){
+    output("get_buffer")
+    if msg_size > max_msg_size:                   # assert(msg_size <= max_msg_size);
+      return None
+    # A Slot can be reused if the previos message in that slot was received by everyone
+    # Combine it with the FIFO ordering of messages
+    completed_num = _min("received_num", my_rank) # completed_num = Min{sst[*].received_num[my_rank]};
+    if (sent_num - completed_num) < window_size:   # if(sent_num - completed_num < window_size){
+      return None                         #   return nullptr;
+    slot = (sent_num+1)%window_size               # slot = (sent_num + 1)%window_size;
+    sst[my_rank].slots[slot].size = msg_size       # sst[my_rank].slots[slot].size = msg_size;
+    return sst[my_rank].slots[slot].buf           # return sst[my_rank].slots[slot].buf;
+  
+  def send_msg():                                 # void send(){
+    output("send_msg")
+    slot = (sent_num + 1)%window_size             # slot = (sent_num + 1)%window_size
+    nSlot = sst[my_rank].slots[slot]
+    nSlot.index = sst[my_rank].slots[slot].index+1
+    write_sst(my_rank, "slots", nSlot, slot)       # sst[my_rank].slots[slot].index++;
+    sent_num += 1                                 # sent_num++;
 
-		
-	'''
-	A.4 View Change Protocol
-	A.4.1 Failure handling and leader proposing changes for next view
-	'''
+  
+  '''
+  A.2.4 Receiving
+  '''
+  #always
+  def receive_msg():
+    output("receive_msg")
+    for i in range(nprocess):                                                         # for i in 1 to n {
+      slot = (sst[my_rank].received_num[i]+1)%window_size                             #  slot = (sst[my_rank].received_num[i]+1)%window_size
+    if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1):  #  if(sst[si].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1)){
+      write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)            #    ++sst[my_rank].received_num[i];
+      recv((i, sst[my_rank].received_num[i]))                                         #    recv(M(i, sst[my_rank].received_num[i])); }}
 
-	'''
-	Receives a failure trigger
-	This is to simulate: polling on the SST table for not receving a message for a time-period 
-		from one of the servers
-	'''
-	def receive(msg= ('failure', r)):							# every 1 millisecond post RDMA write with completion time to every SST Row that is not frozen
-		if r != my_rank:														# if (no completion polled from row r)
-			output("freeze") # no impl mentioned			# sst.freeze(r)
-			output("Received failure of ", r)							
-			report_failure(r)													# report_failure(r)
+  
+  def get_min_idx_rec():                               # (min,argmin) i sst[my_rank].latest_received_index[i];
+    min_ind = sst[my_rank].latest_received_index[0]
+    lagging_node = 0
+    for i in range(1, nprocess):
+      if sst[my_rank].latest_received_index[i] < min_ind:
+        min_ind = sst[my_rank].latest_received_index[i]
+        lagging_node = i
+    return min_ind,lagging_node
 
+  '''
+  A.3 Atomic Multicast Delivery in the Steady Stat
+  A.3.1 Receive
+  '''
+  def recv(M):                                           # on recv(M(i,k)) {
+    output("recv")
+    (i, k) = M
+    # store the message to deliver later
+    msgs[gi(i, k)] = (i, k)                             # msgs[дi(M(i,k))] = M(i,k);
+    write_sst(my_rank, "latest_received_index", k, i)    # sst[my_rank].latest_received_index[i ] = k;    
+    # calculate global index of the message in the global round−robin ordering
+    min_index_received, lagging_node_rank = get_min_idx_rec()                                   # (min_index_received, lagging_node_rank) = (min,argmin) i sst[my_rank].latest_received_index[i];  
+    write_sst(my_rank, "global_index", ((min_index_received + 1)*len(G)+lagging_node_rank-1))    # sst[my_rank].global_index = (min_index_received + 1) ∗ |G| + lagging_node_rank − 1;
+    # // |= K me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
 
-	def report_failure(r): 																#report_failure(r)
-		output("in report failure")		
-		#local node suspects node that owns the row report							
-		write_sst(my_rank, 'suspected', True, r)						# sst[my_rank].suspected[r] = true;
-		total_failed = Count('suspected', True) 						# total_failed = Count(sst[∗].suspected, true);
-		if total_failed >= (nprocess + 1)/2:								# if (total_failed >= (num_members + 1)/2) {
-			output("throw derecho_partitioning_exception")				# throw derecho_partitioning_exception; }
-			return
-		suspect() 																					# IMPROV
-
-	'''
-	returns the node that r believes to be the leader, on the basis of the current sst
-	'''
-	def find_new_leader(my_rank):								# find_new__leader(r)
-		for i in range(len(sst)):									# for(int i = 0; i < curr_view.max_rank; ++i)
-			if sst[my_rank].suspected[i]:						# 	if(sst[r].suspected[i])
-				continue															# 		continue;
-			else:																		# 	else
-				return i 															# 		return i
-	
-	'''
-	wait until all non-suspected nodes comsider me to be the leader.
-	implies that the new leader takes action only after every healthy node has
-		pushed final nReceived data to it
-	'''
-																																												#always
-	def leader_selection():
-		output("leader_selection")
-		new_leader = find_new_leader(my_rank)																								# new_leader = find_new_leader(my_rank)
-		if new_leader != curr_view.leader_rank and new_leader == my_rank:										# if(new_leader != curr_view.leader_rank && new_leader == my_rank)
-			all_others_agree = True 																													# bool all_others_agree = true
-			#so as long as I continue to believe I will be leader
-			while find_new_leader(my_rank) == my_rank:																				# while(find_new_leader(my_rank) == my_rank)
-				for r in range(len(sst)):																												# for(r: SST.rows){
-					if not sst[my_rank].suspected[r]:																							# 	if(sst[my_row].suspected[r] == false)
-						all_others_agree = all_others_agree and (find_new_leader(r) == my_rank)			# 		all_others_agree &&= (find_new_leader(r) == my_rank)
-				
-				if all_others_agree: 																														# if(all_others_agree)
-					#Scan sst to learn prior proposals
-					write_view('leader_rank', my_rank)																						# curr_view.leader_rank = my_rank
-					break																																					# 	break
-
-																																	# always
-	def suspect():
-		output("suspect")
-		for r in range(len(sst)): 																		# for(every row r and s)
-			for s in range(len(sst)):
-				if sst[r].suspected[s]: 																	#	if(sst[r].suspected[s] == true)
-					# failure propagation, local node also suspects s
-					# and updates it SST row
-					write_sst(my_rank, 'suspected', True, s) 								#	sst[my_rank].suspected[s] = true
-
-		for s in range(len(sst)): 																		# for(s=0; s < num_members; ++s)
-			# if s is newly suspected
-			if sst[my_rank].suspected[s] and (not curr_view.failed[s]): # sst[my_rank].suspected[s] == true and curr_view.failed[s] == false
-																																	# freeze(s)
-				#report_failure(s)																					# report_failure(s)
-				# mark s as failed in the current view
-				curr_view.failed[s] = True 																# curr_view.failed[s] = true
-				curr_view.wedged = True 																	# curr_view.wedge()
-				write_sst(my_rank, 'wedged', True) 												# sst[my_rank].wedged = true
-
-				leader_selection() 																				# IMPROV
-
-				if curr_view.leader_rank == my_rank and (s not in sst[my_rank].changes)	: 					# if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false)
-					next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed 				# next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed;
-					#not required in python for position
-					changes = sst[my_rank].changes 															
-					changes.append(s) 
-					write_sst(my_rank, 'changes', changes) 											# sst[my_rank].changes[next_change_index] = s #id of node owning S
-					num_changes = sst[my_rank].num_changes + 1 									
-					write_sst(my_rank, 'num_changes', num_changes)							# sst[my_rank].num_changes++;
-					#proposed a new membership change and wedged the current view
+  def deliver_upcall(message):
+        output(" deliver_upcall ", message)                                  # IMPROV: No implementation provided in the pseudocode
 
 
-	'''
-	A.4.2 Terminating old view and installing new view after wedging.
-	'''
-	#when
-	def new_proposal():
-		output("leader proposed a new change") 																# |= leader proposed a new change
-		leader_rank = curr_view.leader_rank	
-		write_sst(my_rank, 'num_acked', sst[leader_rank].num_changes) 				# IMPROV :  believe its missed as it is required to terminate
-		write_sst(my_rank, 'num_changes', sst[leader_rank].num_changes) 			# sst[my_rank].num_changes = sst[leader_rank].num_changes;
-		# copy entire changes vector from the leader's row
-		write_sst(my_rank, 'changes', sst[leader_rank].changes) 							# sst[my_rank].changes = sst[leader_rank].changes;
-		write_sst(my_rank, 'num_committed', sst[leader_rank].num_committed) 	# sst[my_rank].num_committed = sst[leader_rank].num_committed;
-		curr_view.wedged = True 																							# curr_view.wedge();
-		write_sst(my_rank, 'wedged', True) 																		# sst[my_rank].wedged = true;
-		# acknowledged leader's proposal and wedged the current view
+  '''
+  A.3.2 Stability and Delivery
+  '''
+  #always
+  def stability_delivery():
+    stable_msg_index = _min("global_index")   # stable_msg_index = Min{sst[∗].global_index}
+    # // |= K me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
+    for msg in msgs:                           # for (msg : msgs) {
+      if msg <= stable_msg_index:             #   if (msg.global_index <= min_stable_msg_index) {
+        deliver_upcall(msgs[msg])             #     deliver_upcall(msg);
+        del msgs[msg]                         #     msgs.remove(msg.global_index);
+    write_sst(my_rank, "latest_delivered_index", stable_msg_index)   # sst[my_rank].latest_delivered_index = stable_msg_index
+    # // |= K me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
 
-	#when
-	def commit_proposal_leader():
-		#acknowledge a new proposal 																			# |= K U\F ( acknowledged a new proposal )
-		output("commit_proposal_leader")
-		write_sst(my_rank, 'num_committed', min_not_failed('num_acked')) 	# sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
-		#commited acknowledged proposals
+    
+  '''
+  A.4 View Change Protocol
+  A.4.1 Failure handling and leader proposing changes for next view
+  '''
 
-	#when
-	def install_new_view():
-		# leader committed a new membership  # 22 |= leader committed a new membership change
-		curr_view.wedged = True 									# curr_view.wedge();
-		write_sst(my_rank, 'wedged', True) 				# sst[my_rank].wedged = true;
-		await(logical_and_not_failed('wedged'))		# when (LogicalAndNotFailed(sst[∗].wedged) == true) {
-		output("terminate epoch") 								# / |= K U\F ( current view is wedged)
-		terminate_epoch() 												# terminate_epoch
-
-
-	'''
-	calculate next view membership
-	'''
-	def terminate_epoch():
-		leader_rank = curr_view.leader_rank
-		committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)					# committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
-		sst[my_rank].num_installed = sst[leader_rank].num_committed											# IMPROV
-		next_view = View(nprocess - len(sst[my_rank].changes))
-		next_view.leader_rank = curr_view.leader_rank
-		next_view.members = curr_view.members
-		for change_index in range(len(sst[my_rank].changes)):							# for (change_index = 0; change_index < committed_count; change_index++) {
-			node_id = next_view.members[sst[my_rank].changes[change_index]] # node_id = sst[my_rank].changes[change_index]; 
-			output("delete node: ", node_id, sst[my_rank].changes[change_index])
-
-		# if node already a member, the change is to remove the node;
-			if node_id in next_view.members: 												# if (curr_view.contains(node_id) == true) {
-				next_view.members.remove(node_id) 										# next_view.members = curr_view.members; # new_view.members.remove(node_id);
-				output("after remove",  next_view.members)
-			else:																										# else 
-				next_view.members.append(node_id) 										# next_view.members.append(node_id);	
-
-		if leader_rank == my_rank: 																# if (leader_rank == my_rank) {
-			leader_ragged_edge_cleanup() 														# leader_ragged_edge_cleanup();
-		elif await(sst[leader_rank].ragged_edge_computed):		 		# else when (sst[leader_rank].ragged_edge_computed == true) 
-			non_leader_ragged_edge_cleanup() 												# { non_leader_ragged_edge_cleanup(); }
-		curr_view = next_view 																		# curr_view = next_view;
-		#new view installed
-	
-
-	def leader_ragged_edge_cleanup(): 													# leader_ragged_edge_cleanup() {
-		output("leader_ragged_edge_cleanup ", self)
-		if logical_or("ragged_edge_computed"): 										# if (LogicalOr(sst[∗].ragged_edge_computed) == true) {
-			rank = min_with_val("ragged_edge_computed", True)				# Let rank be s.t. sst[rank].ragged_edge_computed is true
-			# copy min_latest_received from the node that computed the ragged edge
-			for n in range(len(G)): 																# for (n = 0; n < |G|; ++n) {
-				write_sst(my_rank, "min_latest_received", sst[rank].min_latest_received[n], n) 			# sst[my_rank].min_latest_received[n] = sst[rank].min_latest_received[n];
-			write_sst(my_rank, "ragged_edge_computed", True)				# sst[my_rank].ragged_edge_computed = true;
-		else: 																										# else {
-			for n in range(len(G)): 																# for (n = 0; n < |G|; ++n) {
-				write_sst(my_rank, "min_latest_received", _min("latest_received_index", n), n)			# sst[my_rank].min_latest_received[n] = Min(sst[∗].latest_received_index[n]);
-				# // |= K me ( sst[my_rank].min_latest_received[n] number of messages from n are safe for delivery)
-			write_sst(my_rank, "ragged_edge_computed", True)				# sst[my_rank].ragged_edge_computed = true;
-		deliver_in_order() 																				# deliver_in_order();
+  '''
+  Receives a failure trigger
+  This is to simulate: polling on the SST table for not receving a message for a time-period 
+    from one of the servers
+  '''
+  def receive(msg= ('failure', r)):              # every 1 millisecond post RDMA write with completion time to every SST Row that is not frozen
+    if r != my_rank:                            # if (no completion polled from row r)
+      output("freeze") # no impl mentioned      # sst.freeze(r)
+      output("Received failure of ", r)              
+      report_failure(r)                          # report_failure(r)
 
 
-	def non_leader_ragged_edge_cleanup(): 											# non_leader_ragged_edge_cleanup() {
-		output("non_leader_ragged_edge_cleanup ", self)
-		leader_rank = curr_view.leader_rank
-		# copy from the leader
-		for n in range(len(G)): 																	# for (n = 0; n < |G|; ++n) {
-			write_sst(my_rank, "min_latest_received", sst[leader_rank].min_latest_received[n], n) 	# sst[my_rank].min_latest_received[n] = sst[leader_rank].min_latest_received[n]; }
-		write_sst(my_rank, "ragged_edge_computed", True)					# sst[my_rank].ragged_edge_computed = true;
-		deliver_in_order() 																				# deliver_in_order();
+  def report_failure(r):                                 #report_failure(r)
+    output("in report failure")    
+    #local node suspects node that owns the row report              
+    write_sst(my_rank, 'suspected', True, r)            # sst[my_rank].suspected[r] = true;
+    total_failed = Count('suspected', True)             # total_failed = Count(sst[∗].suspected, true);
+    if total_failed >= (nprocess + 1)/2:                # if (total_failed >= (num_members + 1)/2) {
+      output("throw derecho_partitioning_exception")        # throw derecho_partitioning_exception; }
+      return
+    suspect()                                           # IMPROV
 
-	def deliver_in_order(): 																				# deliver_in_order() {
-		output("deliver_in_order")
-		curr_global_index = sst[my_rank].latest_delivered_index 			# curr_global_index = sst[my_rank].latest_delivered_index;
-		max_global_index = get_max_gi() 															# max_global_index = max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
-		for global_index in range(curr_global_index + 1,  max_global_index + 1): 			# for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
-			sender_index = global_index/len(G) 													# sender_index = global_index / |G|;
-			sender_rank = global_index%len(G) 													# sender_rank = global_index % |G|;
-			if (sender_index <= sst[my_rank].min_latest_received[sender_rank]):  							# if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
-				deliver_upcall(msgs[global_index]) 												# deliver_upcall(msgs[global_index]);
+  '''
+  returns the node that r believes to be the leader, on the basis of the current sst
+  '''
+  def find_new_leader(my_rank):                # find_new__leader(r)
+    for i in range(len(sst)):                  # for(int i = 0; i < curr_view.max_rank; ++i)
+      if sst[my_rank].suspected[i]:            #   if(sst[r].suspected[i])
+        continue                              #     continue;
+      else:                                    #   else
+        return i                               #     return i
+  
+  '''
+  wait until all non-suspected nodes comsider me to be the leader.
+  implies that the new leader takes action only after every healthy node has
+    pushed final nReceived data to it
+  '''
+                                                                                        #always
+  def leader_selection():
+    output("leader_selection")
+    new_leader = find_new_leader(my_rank)                                                # new_leader = find_new_leader(my_rank)
+    if new_leader != curr_view.leader_rank and new_leader == my_rank:                    # if(new_leader != curr_view.leader_rank && new_leader == my_rank)
+      all_others_agree = True                                                           # bool all_others_agree = true
+      #so as long as I continue to believe I will be leader
+      while find_new_leader(my_rank) == my_rank:                                        # while(find_new_leader(my_rank) == my_rank)
+        for r in range(len(sst)):                                                        # for(r: SST.rows){
+          if not sst[my_rank].suspected[r]:                                              #   if(sst[my_row].suspected[r] == false)
+            all_others_agree = all_others_agree and (find_new_leader(r) == my_rank)      #     all_others_agree &&= (find_new_leader(r) == my_rank)
+        
+        if all_others_agree:                                                             # if(all_others_agree)
+          #Scan sst to learn prior proposals
+          write_view('leader_rank', my_rank)                                            # curr_view.leader_rank = my_rank
+          break                                                                          #   break
+
+                                                                  # always
+  def suspect():
+    output("suspect")
+    for r in range(len(sst)):                                     # for(every row r and s)
+      for s in range(len(sst)):
+        if sst[r].suspected[s]:                                   #  if(sst[r].suspected[s] == true)
+          # failure propagation, local node also suspects s
+          # and updates it SST row
+          write_sst(my_rank, 'suspected', True, s)                 #  sst[my_rank].suspected[s] = true
+
+    for s in range(len(sst)):                                     # for(s=0; s < num_members; ++s)
+      # if s is newly suspected
+      if sst[my_rank].suspected[s] and (not curr_view.failed[s]): # sst[my_rank].suspected[s] == true and curr_view.failed[s] == false
+                                                                  # freeze(s)
+        #report_failure(s)                                          # report_failure(s)
+        # mark s as failed in the current view
+        curr_view.failed[s] = True                                 # curr_view.failed[s] = true
+        curr_view.wedged = True                                   # curr_view.wedge()
+        write_sst(my_rank, 'wedged', True)                         # sst[my_rank].wedged = true
+
+        leader_selection()                                         # IMPROV
+
+        if curr_view.leader_rank == my_rank and (s not in sst[my_rank].changes)  :           # if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false)
+          next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed         # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed;
+          #not required in python for position
+          changes = sst[my_rank].changes                               
+          changes.append(s) 
+          write_sst(my_rank, 'changes', changes)                       # sst[my_rank].changes[next_change_index] = s #id of node owning S
+          num_changes = sst[my_rank].num_changes + 1                   
+          write_sst(my_rank, 'num_changes', num_changes)              # sst[my_rank].num_changes++;
+          #proposed a new membership change and wedged the current view
 
 
-	def receive(msg = ('rdma_write_sst', row, attr, val, index)):
-		#write_sst(row, attr, val, index, False)
-		#update the local SST
-		output("Received message:" , ('rdma_write_sst', row, attr, val, index))
-		if index is not None:
-			newval = getattr(sst[row], attr)
-			newval[index] = val
-			setattr(sst[row], attr, newval) 
-		else:
-			setattr(sst[row], attr, val) 
+  '''
+  A.4.2 Terminating old view and installing new view after wedging.
+  '''
+  #when
+  def new_proposal():
+    output("leader proposed a new change")                                 # |= leader proposed a new change
+    leader_rank = curr_view.leader_rank  
+    write_sst(my_rank, 'num_acked', sst[leader_rank].num_changes)         # IMPROV :  believe its missed as it is required to terminate
+    write_sst(my_rank, 'num_changes', sst[leader_rank].num_changes)       # sst[my_rank].num_changes = sst[leader_rank].num_changes;
+    # copy entire changes vector from the leader's row
+    write_sst(my_rank, 'changes', sst[leader_rank].changes)               # sst[my_rank].changes = sst[leader_rank].changes;
+    write_sst(my_rank, 'num_committed', sst[leader_rank].num_committed)   # sst[my_rank].num_committed = sst[leader_rank].num_committed;
+    curr_view.wedged = True                                               # curr_view.wedge();
+    write_sst(my_rank, 'wedged', True)                                     # sst[my_rank].wedged = true;
+    # acknowledged leader's proposal and wedged the current view
 
-	def receive(msg = ('rdma_write_view', attr, val, index)):
-		#update the local view
-		output("Received message:" , ('rdma_write_view', attr, val, index))
-		if index is not None:
-			newval = getattr(curr_view, attr)
-			newval[index] = val
-			setattr(curr_view, attr, newval) 
-		else:
-			setattr(curr_view, attr, val) 
+  #when
+  def commit_proposal_leader():
+    #acknowledge a new proposal                                       # |= K U\F ( acknowledged a new proposal )
+    output("commit_proposal_leader")
+    write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))   # sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
+    #commited acknowledged proposals
+
+  #when
+  def install_new_view():
+    # leader committed a new membership  # 22 |= leader committed a new membership change
+    curr_view.wedged = True                   # curr_view.wedge();
+    write_sst(my_rank, 'wedged', True)         # sst[my_rank].wedged = true;
+    await(logical_and_not_failed('wedged'))    # when (LogicalAndNotFailed(sst[∗].wedged) == true) {
+    output("terminate epoch")                 # / |= K U\F ( current view is wedged)
+    terminate_epoch()                         # terminate_epoch
+
+
+  '''
+  calculate next view membership
+  '''
+  def terminate_epoch():
+    leader_rank = curr_view.leader_rank
+    committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)          # committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
+    sst[my_rank].num_installed = sst[leader_rank].num_committed                      # IMPROV
+    next_view = View(nprocess - len(sst[my_rank].changes))
+    next_view.leader_rank = curr_view.leader_rank
+    next_view.members = curr_view.members
+    for change_index in range(len(sst[my_rank].changes)):              # for (change_index = 0; change_index < committed_count; change_index++) {
+      node_id = next_view.members[sst[my_rank].changes[change_index]] # node_id = sst[my_rank].changes[change_index]; 
+      output("delete node: ", node_id, sst[my_rank].changes[change_index])
+
+    # if node already a member, the change is to remove the node;
+      if node_id in next_view.members:                         # if (curr_view.contains(node_id) == true) {
+        next_view.members.remove(node_id)                     # next_view.members = curr_view.members; # new_view.members.remove(node_id);
+        output("after remove",  next_view.members)
+      else:                                                    # else 
+        next_view.members.append(node_id)                     # next_view.members.append(node_id);  
+
+    if leader_rank == my_rank:                                 # if (leader_rank == my_rank) {
+      leader_ragged_edge_cleanup()                             # leader_ragged_edge_cleanup();
+    elif await(sst[leader_rank].ragged_edge_computed):         # else when (sst[leader_rank].ragged_edge_computed == true) 
+      non_leader_ragged_edge_cleanup()                         # { non_leader_ragged_edge_cleanup(); }
+    curr_view = next_view                                     # curr_view = next_view;
+    #new view installed
+  
+
+  def leader_ragged_edge_cleanup():                           # leader_ragged_edge_cleanup() {
+    output("leader_ragged_edge_cleanup ", self)
+    if logical_or("ragged_edge_computed"):                     # if (LogicalOr(sst[∗].ragged_edge_computed) == true) {
+      rank = min_with_val("ragged_edge_computed", True)        # Let rank be s.t. sst[rank].ragged_edge_computed is true
+      # copy min_latest_received from the node that computed the ragged edge
+      for n in range(len(G)):                                 # for (n = 0; n < |G|; ++n) {
+        write_sst(my_rank, "min_latest_received", sst[rank].min_latest_received[n], n)       # sst[my_rank].min_latest_received[n] = sst[rank].min_latest_received[n];
+      write_sst(my_rank, "ragged_edge_computed", True)        # sst[my_rank].ragged_edge_computed = true;
+    else:                                                     # else {
+      for n in range(len(G)):                                 # for (n = 0; n < |G|; ++n) {
+        write_sst(my_rank, "min_latest_received", _min("latest_received_index", n), n)      # sst[my_rank].min_latest_received[n] = Min(sst[∗].latest_received_index[n]);
+        # // |= K me ( sst[my_rank].min_latest_received[n] number of messages from n are safe for delivery)
+      write_sst(my_rank, "ragged_edge_computed", True)        # sst[my_rank].ragged_edge_computed = true;
+    deliver_in_order()                                         # deliver_in_order();
+
+
+  def non_leader_ragged_edge_cleanup():                       # non_leader_ragged_edge_cleanup() {
+    output("non_leader_ragged_edge_cleanup ", self)
+    leader_rank = curr_view.leader_rank
+    # copy from the leader
+    for n in range(len(G)):                                   # for (n = 0; n < |G|; ++n) {
+      write_sst(my_rank, "min_latest_received", sst[leader_rank].min_latest_received[n], n)   # sst[my_rank].min_latest_received[n] = sst[leader_rank].min_latest_received[n]; }
+    write_sst(my_rank, "ragged_edge_computed", True)          # sst[my_rank].ragged_edge_computed = true;
+    deliver_in_order()                                         # deliver_in_order();
+
+  def deliver_in_order():                                         # deliver_in_order() {
+    output("deliver_in_order")
+    curr_global_index = sst[my_rank].latest_delivered_index       # curr_global_index = sst[my_rank].latest_delivered_index;
+    max_global_index = get_max_gi()                               # max_global_index = max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
+    for global_index in range(curr_global_index + 1,  max_global_index + 1):       # for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
+      sender_index = global_index/len(G)                           # sender_index = global_index / |G|;
+      sender_rank = global_index%len(G)                           # sender_rank = global_index % |G|;
+      if (sender_index <= sst[my_rank].min_latest_received[sender_rank]):                # if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
+        deliver_upcall(msgs[global_index])                         # deliver_upcall(msgs[global_index]);
+
+
+  def receive(msg = ('rdma_write_sst', row, attr, val, index)):
+    #write_sst(row, attr, val, index, False)
+    #update the local SST
+    output("Received message:" , ('rdma_write_sst', row, attr, val, index))
+    if index is not None:
+      newval = getattr(sst[row], attr)
+      newval[index] = val
+      setattr(sst[row], attr, newval) 
+    else:
+      setattr(sst[row], attr, val) 
+
+  def receive(msg = ('rdma_write_view', attr, val, index)):
+    #update the local view
+    output("Received message:" , ('rdma_write_view', attr, val, index))
+    if index is not None:
+      newval = getattr(curr_view, attr)
+      newval[index] = val
+      setattr(curr_view, attr, newval) 
+    else:
+      setattr(curr_view, attr, val) 
 
 
 '''
 This process is to simulate a failure scenario
 '''
 class Sim(process):
-	def setup(nodes):
-		pass
-	
-	def run():
-		output(nodes)
-		#failing last node
-		send(('failure', len(nodes)-1), to= nodes)
-		output("Sent failure message to nodes")
-		await(received(('end')))
-		output('terminating SIM')
+  def setup(nodes):
+    pass
+  
+  def run():
+    output(nodes)
+    #failing last node
+    send(('failure', len(nodes)-1), to= nodes)
+    output("Sent failure message to nodes")
+    await(received(('end')))
+    output('terminating SIM')
 
 
 def main():
-	nprocess = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-	window_size = 5
+  nprocess = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+  window_size = 5
 
-	#TODO start View
-	nodes = new(Node, num= nprocess)
-	rank = 0
-	for n in nodes:
-		setup(n, (nodes, nprocess,rank,window_size,))
-		rank += 1
-	start(nodes)
-	sim = new(Sim, (nodes,), num=1)
-	start(sim)
-	await(len(setof(a, received(('end'), from_ =a))) == len(nodes) - 1)
-	send(('end'), to=(sim|nodes))
+  #TODO start View
+  nodes = new(Node, num= nprocess)
+  rank = 0
+  for n in nodes:
+    setup(n, (nodes, nprocess,rank,window_size,))
+    rank += 1
+  start(nodes)
+  sim = new(Sim, (nodes,), num=1)
+  start(sim)
+  await(len(setof(a, received(('end'), from_ =a))) == len(nodes) - 1)
+  send(('end'), to=(sim|nodes))
