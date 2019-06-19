@@ -23,16 +23,13 @@ class Slot:
   The vector received_num holds counters of the number of messages received from each node.
   """
   def __init__(self):
-    # index: maintains the position for a slot in the list of slots
-    self.index = -1
-    # size: Stores the size of the message buffer, each of which can store a message of up to max_message_size characters
-    self.size = 0
-    # buf: Stores the message in this buffer
-    self.buf = None
+    self.index = -1  #- index position of this slot in vector of slots
+    self.buf = None  #- message in this slot, of up to max_message_size characters
+    self.size = 0    #- size of message in this slot, up to max_message_size
 
 
 class SSTRow:                                                             # IMPROV --- The variables and their initial values are not explicitly mentioned in the Paper
-  '''
+  '''source?
   Derecho uses protocols that run on a novel replicated data structure called the shared state table, or SST. 
   The SST offers a tabular distributed shared memory abstraction. Every member of the top-level group holds its own replica of the entire table, in local memory.
   Within this table, there is one identically formatted row per member. 
@@ -41,26 +38,21 @@ class SSTRow:                                                             # IMPR
   A copy of the SST is stored by each Node
   SST as per A.1.1 SST
   '''
-                                      # column_name->string|string[int] //e.g. wedged or latest_received_index[3]
+                                      # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
                                       # sst_row->sst[row_rank]
                                       # row_rank->int
                                       # sst_column->sst[*].column_name
-                                      # sst_entry->sst_row.column_name //e.g. sst[0].stable_msg_index[0]
+                                      # sst_entry->sst_row.column_name // e.g. sst[0].stable_msg_index[0]
   def __init__(self, nprocess, window_size):
+    #- each field is a column name (?)
     # suspected: Stores true if the Node suspects a failure of any other Node against its index
-    self.suspected = [False] * nprocess
-    # num_committed: total number of changes committed by the Node, as suggested by the Leader
-    self.num_committed = 0
-    # num_acked: total number of changes acknowleged by the Node, as suggested by the Leader
-    self.num_acked = 0
-    # received_num: The vector received_num holds counters of the number of messages received from each node
-    self.received_num = [0] * nprocess
-    # wedged: Stores true if the Node has wedged its SST 
-    self.wedged = False
-    # changes: The node ids of the crashed/new nodes
-    self.changes = []
-    # num_changes: stores the total changes (crashes/additions) of Nodes
-    self.num_changes = 0
+    self.suspected = [False] * nprocess  # (but this is a list)
+    self.num_committed = 0  #- number of changes committed by the Node (what Node?), as suggested by the Leader
+    self.num_acked = 0      #- number of changes acknowleged by the Node (what Node?), as suggested by the Leader
+    self.received_num = [0] * nprocess  #- list, of number of messages received from each node (by lengh 1?)
+    self.wedged = False     #- whether the Node has wedged its SST
+    self.changes = []       #- list of node ids of crashed/new nodes
+    self.num_changes = 0    #- number? of changes (crashes/additions) of Nodes  (what Nodes?)
     # num_installed: number of 'changes' applied or installed to the current Node
     self.num_installed = 0
     # min_latest_received: The min index of message received by all processes
@@ -135,11 +127,12 @@ class Node(process):
     send(('rdma_write_view', attr, val, index), to=(nodes-set([self])))
 
   
-  def min_not_failed(attr):
+  def min_not_failed(attr): (why not called column or col? paper called "attr"?)
     '''
-    - Calculates the min value for a columnn for non-failed Nodes in an SST
+    - Calculates the min value for a columnn for non-failed Nodes in an SST (non-failed? Nodes? an SST? can you write more precisely, check if mine below is right)
     - Takes the column name as a param
     '''
+    '''- min value of column attr for non-suspected nodes in the sst of this node'''
     return min({getattr(sst[row], attr) for row in range(len(sst)) if not sst[my_rank].suspected[row]})
 
   def _min(attr, index=None):
@@ -160,15 +153,15 @@ class Node(process):
     return all(getattr(sst[row], attr) for row in range(len(sst)) if not sst[my_rank].suspected[row])
 
   def logical_or(attr):
-    '''logical OR of all values in a columnn in an SSTColumn to be passed an a paramter'''
+    '''logical OR of all values in a columnn in an SSTColumn to be passed an a paramter''' (the code doesn't sound to do the comment)
     return some(v in sst, has=getattr(v,attr))
 
-  def min_with_val(attr, value):
+  def min_with_val(attr, val):
     '''
     - Calculates the min row with a given value for a column in the SST
     - Column and value to be checked against to be passed an a paramter
     '''
-    return min({row for row in range(len(sst)) if getattr(sst[row], attr) == value})
+    return min({row for row in range(len(sst)) if getattr(sst[row], attr) == val})
 
   def Count(attr, val):
     '''
@@ -178,17 +171,13 @@ class Node(process):
     return len({row for row in range(len(sst)) if getattr(sst[row], attr) == val})
 
   def get_max_gi():
-    '''
-    - max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
-    '''
+    '''- max of (sst[my_rank].min_latest_received[n] ∗ |G| + n) over n in 1..|G|'''
     if len(G) < 1:
       return 0
-    return max({(sst[my_rank].min_latest_received[n] * len(G) + n) for n in range(len(G))})
+    return max(sst[my_rank].min_latest_received[n] * len(G) + n) for n in range(len(G)))
 
   def gi(i, k):
-    '''
-    Calculate the global index of a message
-    '''
+    '''global index of a message given ... i and ... k'''
     return i*len(G)+k                             # gi (M(i, k)) = i ∗ |G| + k
 
   
