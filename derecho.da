@@ -208,7 +208,7 @@ class Node(process):
         await(logical_and_not_failed('wedged'))    # when (LogicalAndNotFailed(sst[∗].wedged) == true) {
         output("terminate epoch")                 # / |= K U\F ( current view is wedged)
         terminate_epoch()                         # terminate_epoch
-      elif timeout(4):                                                                                                       # IMPROV
+      elif timeout(4):            #- Adding a timeout for termination
         receive_msg() # always - but  called only once to help terminate
         stability_delivery() # always - but  called only once to help terminate
         send('done', to=parent())
@@ -327,7 +327,7 @@ class Node(process):
     if total_failed >= (num_nodes + 1)/2:                #   if (total_failed >= (num_members + 1)/2) {
       output("throw derecho_partitioning_exception")    #     throw derecho_partitioning_exception;
       return                                            #   }
-    suspect()                                           # IMPROV
+    suspect()                                           #- adding a call to suspect(), to trigger the next steps after failure
 
   #  returns the node that r believes to be the leader, on the basis of the current sst
   #  Notice that becasue of asynchrony in the sst update propagations, callers other than r itself might be using
@@ -380,7 +380,7 @@ class Node(process):
         curr_view.wedged = True                                   # curr_view.wedge()
         write_sst(my_rank, 'wedged', True)                         # sst[my_rank].wedged = true
 
-        leader_selection()                                         # IMPROV
+        leader_selection()                                         #- adding a call for leader selection, to maintain sequence of actions
 
         if curr_view.leader_rank == my_rank and s not in sst[my_rank].changes:           # if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false)
           next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed         # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed;
