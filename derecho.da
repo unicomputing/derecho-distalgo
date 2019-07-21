@@ -16,7 +16,7 @@ import random
 
 class Slot:
   """
-  A.2.1. SST Structure. SMC uses two fields, slots and received_num. 
+  A.2.1 SST Structure. SMC uses two fields, slots and received_num. 
   slots is a vector of window_size slots, 
   each of which can store a message of up to max_message_size characters. 
   The index associated with a slot is used to signal that a new message is present in that slot: 
@@ -28,7 +28,6 @@ class Slot:
     self.index = -1  #- index position of this slot in vector of slots
     self.buf = None  #- message in this slot, of up to max_message_size characters
     self.size = 0    #- size of message in this slot, up to max_message_size
-
 
 class SSTRow:    #- The variables and their initial values are not explicitly mentioned in the paper
   """
@@ -70,7 +69,7 @@ class SSTRow:    #- The variables and their initial values are not explicitly me
 class View(): 
   """A view holds the metadata of an epoch"""
   def __init__(self, num_nodes, leader_rank=0):
-    self.max_rank = num_nodes  #- max rank in the SST table in the current view, basically the number of nodes in the systems
+    self.max_rank = num_nodes  #- max rank in the SST in the current view, basically the number of nodes in the systems
     self.leader_rank = 0       #- rank of the leader in the currrent view
     self.failed = [False] * num_nodes  #- true against index of each node's rank if a process is deemed 'failed' in the view
                                        # (for each node, whether the node is deemed 'failed' in the current view?)
@@ -114,15 +113,12 @@ class Node(process):
       setattr(curr_view, col, val)           #- if its not a list, just set the value to the new val passed
     send(('rdma_write_view', col, val, index), to=(nodes-{self}))
                                              #- send update message to other nodes, so they update their local copies of the view
-
   def min_not_failed(col):
     """min value of column named col for non-suspected nodes in the sst of this node"""
     return min({getattr(sst[row], col) for row in range(len(sst)) if not sst[my_rank].suspected[row]})
 
-  #- min value of a column in the sst of this node
-  #- col: the column name on which the given logic is to be computed
-  #- index (optional) - if the column is a list, then position in the list over which the minimum has to be claculated 
-  def _min(col, index=None):
+  def _min(col, index = None):
+    """min value of column col, at given index for col being a list, in the sst of this node"""
     if index is None:
       return min({getattr(sst[row], col) for row in range(len(sst))})
     else:
@@ -134,7 +130,7 @@ class Node(process):
 
   def logical_or(col):
     """logical 'OR' of all values in column col in the sst of this node"""
-  	return any(getattr(sst[row], col) for row in range(len(sst)))
+    return any(getattr(sst[row], col) for row in range(len(sst)))
 
   def min_with_val(col, val):
     """minimum rank of row in the sst of this node where column col has value val"""
@@ -144,17 +140,15 @@ class Node(process):
     """count of rows with value val for column col in the sst of this node"""
     return len({row for row in range(len(sst)) if getattr(sst[row], col) == val})
 
-  #- max value of the global index of all the messages in the system
   def get_max_gi():
-    """- max of (sst[my_rank].min_latest_received[n] ∗ |G| + n) over n in 1..|G|"""
+    """max value of the global index of all the messages in the system,
+       max of (sst[my_rank].min_latest_received[n] ∗ |G| + n) over n in 1..|G|"""
     if len(G) < 1: return 0
     return max((sst[my_rank].min_latest_received[n] * len(G) + n) for n in range(len(G)))
 
-  #- global index of a message based on the passed parameters
-  #- i: sender node's rank
-  #- k: sender's index of the message 
   def gi(i, k):
-    return i*len(G)+k                             # gi (M(i, k)) = i ∗ |G| + k
+    """global index of a message given sender node's rank i and sender's index k of the message""" 
+    return i * len(G) + k                 # gi(M(i, k)) = i ∗ |G| + k
 
   # A.2.2 Initialization.
   def setup(nodes, num_nodes, my_rank, window_size):
@@ -236,7 +230,7 @@ class Node(process):
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)      
     sent_num += 1                                 #   sent_num++; }
   
-  # A.2.4 Receiving
+  # A.2.4 Receiving.
   #- receives a message, increments the current slot based on thewindow size and receives the message
   def receive_msg():                                       # always {
     output("receive_msg")
@@ -262,7 +256,7 @@ class Node(process):
 
   # A.3 Atomic Multicast Delivery in the Steady State
 
-  # A.3.1 Receive
+  # A.3.1 Receive.
   #- Receives a message and adds it to the global message queue
   def recv(M):                                         # on recv(M(i,k)) {
     output("recv")                                     #   // |= K_me(Received M(i,k))
@@ -298,7 +292,7 @@ class Node(process):
   # A.4.1 Failure Handling and Leader Proposing Changes for Next View.
  
   #- Receives a failure trigger.
-  #- This simulates polling on SST table for not receving a message for a time-period from one of the nodes
+  #- This simulates polling on SST for not receving a message for a time-period from one of the nodes
   def receive(msg=('failure', r)):              # every 1 millisecond {
                                                 #   post RDMA write with completion time to every SST Row that is not frozen
     if r != my_rank: # ?                        #   if (no completion polled from row r) {
@@ -403,8 +397,7 @@ class Node(process):
         next_view.members.remove(node_id)                #       new_view.members.remove(node_id); } #- new_view should be next_view
         output("after remove",  next_view.members)
       else:                                              #     else {
-        next_view.members.append(node_id)                #       next_view.members.append(node_id);
-                                                         #     }}
+        next_view.members.append(node_id)                #       next_view.members.append(node_id); }}
     if leader_rank == my_rank:                           #   if (leader_rank == my_rank) {
       leader_ragged_edge_cleanup()                       #     leader_ragged_edge_cleanup();
     elif await(sst[leader_rank].ragged_edge_computed):   #   else { when (sst[leader_rank].ragged_edge_computed == true) { 
