@@ -39,7 +39,7 @@ class SSTRow:    #- The variables and their initial values are not explicitly me
   A member has full read/write access to its own row but is limited to read-only copies of the rows associated with other members.
   
   A list of SSTRows form a Shared State Table (SST) (source: 3.4 Shared State Table: The SST, paragraph 2, line 3
-  A copy of the SST is stored by each Node. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
+  A copy of the SST is stored by each DNode. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
   A.1.1 SST.
   """
                                       # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
@@ -77,13 +77,13 @@ class View():
     self.members = [None] * num_nodes  #- list of members (nodes) in the current view
 
 
-class Node(process):
+class DNode(process):
 
   #- Simulate RDMA based write to an SST
-  #- Every Node owns a row in the SST and is the only writer. 
-  #- Every local update to a cell must be multicasted to all other Nodes to update their copy of the same row.
-  #- Derecho uses RDMA to update across Nodes, we simulate this using the below functions write_sst and write_view.
-  #- Every update to a cell is written locally and then multicasted to all Nodes for them to update their local copies.
+  #- Every DNode owns a row in the SST and is the only writer. 
+  #- Every local update to a cell must be multicasted to all other DNodes to update their copy of the same row.
+  #- Derecho uses RDMA to update across DNodes, we simulate this using the below functions write_sst and write_view.
+  #- Every update to a cell is written locally and then multicasted to all DNodes for them to update their local copies.
   #- row: row number in the SST.
   #- col: column name to be updated.
   #- val: value with which the column has to be updated.
@@ -183,8 +183,8 @@ class Node(process):
         write_sst(my_rank, 'wedged', True)                                   #     sst[my_rank].wedged = true;
                                                                              #     // |= acknowledged leader's proposal and wedged the current view
                                                                              #   }}
-      elif curr_view.leader_rank == my_rank and                           # when (curr_view.leader_rank == my_rank and 
-           min_not_failed('num_acked') > sst[my_rank].num_committed:      #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
+      elif curr_view.leader_rank == my_rank and  min_not_failed('num_acked') > sst[my_rank].num_committed: # when (curr_view.leader_rank == my_rank and 
+        #min_not_failed('num_acked') > sst[my_rank].num_committed:      #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
         output("commit_proposal_leader")                                  #   // |= K U\F ( acknowledged a new proposal )
         write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))  #   sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
                                                                           #   // |= commited acknowledged proposals
@@ -197,7 +197,7 @@ class Node(process):
         await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[∗].wedged) == true) {
         output("terminate epoch")                #     // |= K U\F (current view is wedged)
         terminate_epoch()                        #     terminate_epoch(); }}
-      elif timeout(           #- adding a timeout for termination
+      elif timeout(4):        #- adding a timeout for termination
         receive_msg()         # always - but  called only once to help terminate
         stability_delivery()  # always - but  called only once to help terminate
         send('done', to=parent())
@@ -241,7 +241,7 @@ class Node(process):
                                                            #      ++sst[my_rank].received_num[i];
       recv((i, sst[my_rank].received_num[i]))              #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
-  #- minimun index received by this node and the lagging node according to this Node's SST
+  #- minimun index received by this node and the lagging node according to this DNode's SST
   def get_min_idx_rec():                               # (min,argmin) i sst[my_rank].latest_received_index[i];
     min_ind = sst[my_rank].latest_received_index[0]    
     lagging_node = 0
@@ -480,9 +480,10 @@ class Sim(process):
 
 #- take the number of nodes as input parameters during runtime 
 def main():
+  config(clock is lamport, visualize is True)
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3  #- take the number of nodes in the system as input
   window_size = 5                                           #- set window_size to 5
-  nodes = new(Node, num= num_nodes)                         #- create a set of node processes
+  nodes = new(DNode, num= num_nodes)                         #- create a set of node processes
   for (rank, node) in enumerate(nodes):
     setup(node, (nodes, num_nodes, rank, window_size))
   start(nodes)
