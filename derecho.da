@@ -97,9 +97,6 @@ class Node(process):
       setattr(sst[row], col, val)            #- if it's not a list, just set the value to the new val passed
     message = ('rdma_write_sst', row, col, val, index)  #- create an update message to broadcast the update to others nodes
     send(message, to=(nodes-{self}))         #- send the update message to other nodes, so they update their local copies
-    if message[1] == "slots":
-      output("=============================")
-      send('slot', to=(nodes-{self}))         #- annie test
 
   #- Simulate RDMA based write to a View  (possibly merge with previous def?)
   #- Similar to how write_sst is implemented 
