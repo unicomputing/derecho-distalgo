@@ -39,7 +39,7 @@ class SSTRow:    #- The variables and their initial values are not explicitly me
   A member has full read/write access to its own row but is limited to read-only copies of the rows associated with other members.
   
   A list of SSTRows form a Shared State Table (SST) (source: 3.4 Shared State Table: The SST, paragraph 2, line 3
-  A copy of the SST is stored by each Nodeg. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
+  A copy of the SST is stored by each Node. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
   A.1.1 SST.
   """
                                       # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
@@ -64,7 +64,7 @@ class SSTRow:    #- The variables and their initial values are not explicitly me
 					 #- The leader proposes the final trim of SST based on the committed messages
     self.latest_delivered_index = -1     #- index of the last message successfully delivered by the current node to all nodes
     self.global_index = -1               #- global message index counter, used for total ordering of messages in the system
-    self.slots = [Slot()] * window_size  #- each Slot stores the new message recieved by the current node
+    self.slots = [Slot() for x in range(window_size)]  #- each Slot stores the new message recieved by the current node
 
 class View(): 
   """A view holds the metadata of an epoch"""
@@ -120,9 +120,9 @@ class Node(process):
   def _min(col, index = None):
     """min value of column col, at given index for col being a list, in the sst of this node"""
     if index is None:
-      return min({getattr(sst[row], col) for row in range(len(sst))})
+      return min({getattr(sst[row], col) for row in range(len(sst)) if getattr(sst[row], col) >= 0})
     else:
-      return min({getattr(sst[row], col)[index] for row in range(len(sst))})
+      return min({getattr(sst[row], col)[index] for row in range(len(sst)) if getattr(sst[row], col)[index] >= 0})
 
   def logical_and_not_failed(col):
     """logical 'AND' of all values in column col for non-suspected nodes in the sst of this node"""
@@ -151,14 +151,14 @@ class Node(process):
     return i * len(G) + k                 # gi(M(i, k)) = i ∗ |G| + k
 
   # A.2.2 Initialization.
-  def setup(nodes, num_nodes, my_rank, window_size):
+  def setup(nodes, num_nodes, my_rank, window_size, sim, num_requests):
                                           # for i in 1 to n {
                                           #   for j in 1 to n {
                                           #     sst[i].received_num[j] = -1; }
                                           #   for k in 1 to window_size {
                                           #     sst[i].slots[k].buf = nullptr
                                           #     sst[i].slots[k].index = 0 }}
-    self.sst = [SSTRow(num_nodes, window_size)] * num_nodes   #- initialized the local SST for this node
+    self.sst = [SSTRow(num_nodes, window_size) for x in range(num_nodes)]   #- initialized the local SST for this node
     self.sent_num = -1                    # sent_num = -1     #- helper variable to maintain a count of messages sent by this node
     self.curr_view = View(num_nodes)      #- initialize the local view object
     self.G = nodes                        #- the set of nodes in the system
@@ -197,12 +197,14 @@ class Node(process):
         await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[∗].wedged) == true) {
         output("terminate epoch")                #     // |= K U\F (current view is wedged)
         terminate_epoch()                        #     terminate_epoch(); }}
-      elif timeout(4):        #- adding a timeout for termination
-        receive_msg()         # always - but  called only once to help terminate
-        stability_delivery()  # always - but  called only once to help terminate
-        send('done', to=parent())
-        break
+      elif timeout(2):                   #- runs the below message protocols always
+        receive_msg()         # always 
+        stability_delivery()  # always
+        num_requests -= 0.5       #- to help terminate we only do (2*num_requests) rounds of checking for new requests
+        if num_requests == 0:     #- special check to help terminate the program after num_requests rounds of delivery
+          break
     #output("SST: ", sst)
+    send('done', to=parent())   #- sending Done to parent and exiting         
     output("Final agreed new view: ", curr_view.members)
     output('terminating NODES')
 
@@ -221,37 +223,34 @@ class Node(process):
     return sst[my_rank].slots[slot].buf           #   return sst[my_rank].slots[slot].buf; }
   
   #- increment the slot and send the message
-  def send_msg():                                 # void send() {
-    output("send_msg")
+  def send_msg(msg):
+    output("send_msg", msg)
     slot = (sent_num + 1) % window_size           #   slot = (sent_num + 1) % window_size;
+    sst[my_rank].slots[slot].buf = msg            #   the application writes the message contents in the buffer
     sst[my_rank].slots[slot].index += 1           #   sst[my_rank].slots[slot].index++;
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)      
     sent_num += 1                                 #   sent_num++; }
   
-  def receive(msg=('request', tid)):      #- receive request from application
-    send_msg()                            #-
+  def receive(msg=('request', tid)):      #- receive request from application (Sim)
+    send_msg(tid)                         #- send the message in the next slot
 
   # A.2.4 Receiving.
   #- receives a message, increments the current slot based on thewindow size and receives the message
   def receive_msg():                                       # always {
-    output("receive_msg")
     for i in range(num_nodes):                             #   for i in 1 to n {
                                                            #    // the next message from node i will arrive in this slot
       slot = (sst[my_rank].received_num[i]+1)%window_size  #    slot = (sst[my_rank].received_num[i]+1)%window_size
-    if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1):
-                                                           #    if(sst[si].slots[slot].index == (sst[my_rank].received_num[i]+1)/(window_size+1)) {
-      write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
+      if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)//window_size:
+                                                           #    if(sst[si].slots[slot].index == (sst[my_rank].received_num[i]+1)/window_size+1) {
+                                                           #- above line is slightly modified (removed +1 on RHS)
+        write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
                                                            #      ++sst[my_rank].received_num[i];
-      recv((i, sst[my_rank].received_num[i]))              #      recv(M(i, sst[my_rank].received_num[i])); }}}
+        recv((i, sst[my_rank].received_num[i]))              #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
   #- minimun index received by this node and the lagging node according to this Node's SST
-  def get_min_idx_rec():                               # (min,argmin) i sst[my_rank].latest_received_index[i];
-    min_ind = sst[my_rank].latest_received_index[0]    
-    lagging_node = 0
-    for i in range(1, num_nodes):
-      if sst[my_rank].latest_received_index[i] < min_ind:
-        min_ind = sst[my_rank].latest_received_index[i]
-        lagging_node = i                               #- node from minimum latest index received is the lagging node as per this node's reference
+  def get_min_idx_rec():  # (min,argmin) i sst[my_rank].latest_received_index[i];   
+    min_ind = min(lri for lri in sst[my_rank].latest_received_index if lri >= 0) #- min value > 0 (as init value is -1)
+    lagging_node = sst[my_rank].latest_received_index.index(min_ind)  #- node from minimum latest index received is the lagging node as per this node's reference
     return min_ind,lagging_node
 
 
@@ -273,18 +272,23 @@ class Node(process):
                                                        #   sst[my_rank].global_index = (min_index_received + 1) ∗ |G| + lagging_node_rank − 1;
                                                        #   // |= K_me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
                                                        # }
-  def deliver_upcall(message):
-    output(" deliver_upcall ", message)                #- No implementation provided in the pseudocode
+
+  def deliver_upcall(msg):
+    output(" deliver_upcall ", sst[msg[0]].slots[msg[1]%window_size].buf)       #- No implementation provided in the pseudocode
+    send(('response', sst[msg[0]].slots[msg[1]%window_size].buf), to= sim)      #- Send the message back to Sim
 
   # A.3.2 Stability and Delivery
   #- Calculates the next global index for message delivery 
   def stability_delivery():                   # always {
     stable_msg_index = _min("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
                                               #   // |= K_me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
+    to_delete = []
     for msg in msgs:                          #   for (msg : msgs) {
       if msg <= stable_msg_index:             #     if (msg.global_index <= min_stable_msg_index) {
         deliver_upcall(msgs[msg])             #       deliver_upcall(msg);
-        del msgs[msg]                         #       msgs.remove(msg.global_index); }}
+        to_delete.append(msg)                 #-  store the messages that needs to be deleted, to delete later 
+    for d in to_delete:
+      del msgs[d]                         #       msgs.remove(msg.global_index); }}
     write_sst(my_rank, "latest_delivered_index", stable_msg_index)
                                               #   sst[my_rank].latest_delivered_index = stable_msg_index }
                                               # // |= K_me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
@@ -473,30 +477,53 @@ class Node(process):
 
 class Sim(process):
   """Sim process simulates a failure scenario"""
-  def setup(nodes, num_requests): pass
+  def setup(nodes, num_requests, test_failure): pass
   
   def run():
     output(nodes)
-    for tid in range(num_requests) :
+    for  tid in range(num_requests):
       send(('request', tid), to=random.sample(nodes,1))
-    #failing last node
-    send(('failure', len(nodes)-1), to= nodes)  #- send index of the last node as a failed node to all nodes
-    output("Sent failure message to nodes")
+    
+    if test_failure:  #failing last node
+      send(('failure', len(nodes)-1), to= nodes)  #- send index of the last node as a failed node to all nodes
+      output("Sent failure message to nodes")
+  
+    await(received('done', from_=parent()))      #- wait till Main sends the "end" message 
+   
+  def receive(msg= ('response', tid), from_= p):
+    output("#### Received tid = ", tid, " from ", p)      #- Print the response received from the system
 
 #- take the number of nodes as input parameters during runtime 
 def main():
   config(clock is Lamport, visualize is True)
+  config(channel is fifo, clock is lamport, visualize is {
+        # colors: override message and process colors, defaults to random
+        #         supports any valid CSS color value
+        # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
+        # examples: Transparent, Yellow, DarkRed, rgb(255, 255 ,0),
+        #           rgba(255, 255, 0, 0.1), hsl(210, 100%, 50%)
+        'colors': {
+            # processes
+            #'Sim': 'aquamarine',
+            # messages
+            'request': 'red',
+            'response': 'lime',
+            'rdma_write_sst': 'gray',
+            'rdma_write_view': 'gray'
+
+        }
+    })
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3  #- take the number of nodes in the system as input
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10  #- take the number of requests from applications
-  window_size = 3                                           #- set window_size to 3
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 3  #- take the number of requests from applications
+  window_size = num_requests + 5                                           #- set window_size to num_requests + 5
+  test_failure = False   #- Set to True to test failure scenario
 
   nodes = new(Node, num= num_nodes)                         #- create a set of node processes
+  sim = new(Sim, (nodes, num_requests, test_failure))                     #- create and set up the crash and client simulator process
   for (rank, node) in enumerate(nodes):
-    setup(node, (nodes, num_nodes, rank, window_size))
-  start(nodes)
-
-  sim = new(Sim, (nodes, num_requests))                     #- create and set up the crash simulator process
-  start(sim)
-
-  await(len(setof(a, received('done', from_=a))) == len(nodes)-1)  #- wait until received 'done' from all nodes but the crashed
+    setup(node, (nodes, num_nodes, rank, window_size, sim, num_requests))
+  start(nodes)        #- start the Nodes
+  start(sim)          #- start the Sim process
+  await(len(setof(a, received('done', from_=a))) >= len(nodes)-1)  #- wait until received 'done' from all nodes but the crashed
+  send('done', to=sim)    #- send 'done' message for the Sim process to exit
   #end(sim|nodes)
