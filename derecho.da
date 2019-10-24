@@ -96,7 +96,9 @@ class Node(process):
     else:
       setattr(sst[row], col, val)            #- if it's not a list, just set the value to the new val passed
     message = ('rdma_write_sst', row, col, val, index)  #- create an update message to broadcast the update to others nodes
-    send(message, to=(nodes-{self}))         #- send the update message to other nodes, so they update their local copies
+    message_tagged = ('data' if message[2] == "slots" else 'control',) + message ## new for separating data and control
+    output("====", message_tagged)
+    send(message_tagged, to=(nodes-{self}))         #- send the update message to other nodes, so they update their local copies
 
   #- Simulate RDMA based write to a View  (possibly merge with previous def?)
   #- Similar to how write_sst is implemented 
@@ -454,7 +456,7 @@ class Node(process):
         deliver_upcall(msgs[global_index])                   #       deliver_upcall(msgs[global_index]); }}}
 
   #- Recieves message for an RDMA write from any node and updates the local SST
-  def receive(msg = ('rdma_write_sst', row, col, val, index)):
+  def receive(msg = (_, 'rdma_write_sst', row, col, val, index)):  ## added _ to filter out 'data' and 'control'
     # update the local SST
     output("Received message:" , ('rdma_write_sst', row, col, val, index))   
     if index is not None:                  #- if a non null 'index' is passed, implies updating a list
@@ -506,9 +508,11 @@ def main():
             # processes
             #'Sim': 'aquamarine',
             # messages
-            'request': 'red',
-            'response': 'lime',
-            'rdma_write_sst': 'gray',
+            'request': 'purple',
+            'response': 'blue',
+            'data': 'lime',
+            'control': 'red',
+#            'rdma_write_sst': 'gray',
             'rdma_write_view': 'gray'
 
         }
