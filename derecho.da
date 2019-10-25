@@ -1,52 +1,58 @@
-# This is a DistAlgo implementation of Derecho, as described in
-# Derecho: Fast State Machine Replication for Cloud Services, by
-# SAGAR JHA, Cornell University, USA
-# JONATHAN BEHRENS, Cornell University, USA and MIT, USA
-# THEO GKOUNTOUVAS, MATTHEW MILANO, WEIJIA SONG, EDWARD TREMEL,
-# ROBBERT VAN RENESSE, SYDNEY ZINK, and KENNETH P. BIRMAN,
-# Cornell University, USA
-# ACM Transactions on Computer Systems, Vol. 36, No. 2. Article 4. March 2019.
-# http://www.cs.cornell.edu/ken/derecho.pdf
-#
-# Implementation of the View Change Protocol as listed in Appendix A:
-# Pseudo-code for key protocol steps.  Pages 32 to 37.
+#- This is a DistAlgo implementation of Derecho, as described in
+#- Derecho: Fast State Machine Replication for Cloud Services, by
+#- SAGAR JHA, Cornell University, USA
+#- JONATHAN BEHRENS, Cornell University, USA and MIT, USA
+#- THEO GKOUNTOUVAS, MATTHEW MILANO, WEIJIA SONG, EDWARD TREMEL,
+#- ROBBERT VAN RENESSE, SYDNEY ZINK, and KENNETH P. BIRMAN,
+#- Cornell University, USA
+#- ACM Transactions on Computer Systems, Vol. 36, No. 2. Article 4. March 2019.
+#- http://www.cs.cornell.edu/ken/derecho.pdf
+#-
+#- Implementation of the View Change Protocol as listed in 
+#- Appendix A: Pseudo-code for key protocol steps.  Pages 32 to 37.
 
 import sys
 import random
+import time
 
 class Slot:
-  """
-  A.2.1 SST Structure. SMC uses two fields, slots and received_num. 
-  slots is a vector of window_size slots, 
-  each of which can store a message of up to max_message_size characters. 
-  The index associated with a slot is used to signal that a new message is present in that slot: 
-  For example, if a slot’s index had value k and transitions to k + 1, 
-  then a new message is available to be received.
-  The vector received_num holds counters of the number of messages received from each node.
-  """
+  """a slot that store a message"""
+
+  # A.2.1 SST Structure. SMC uses two fields, slots and received_num. 
+  # slots is a vector of window_size slots, 
+  # each of which can store a message of up to max_message_size characters. 
+  # The index associated with a slot is used to signal that 
+  # a new message is present in that slot: 
+  # For example, if a slot's index had value k and transitions to k + 1, 
+  # then a new message is available to be received.
+  # The vector received_num holds 
+  # counters of the number of messages received from each node.
   def __init__(self):
     self.index = -1  #- index position of this slot in vector of slots
     self.buf = None  #- message in this slot, of up to max_message_size characters
     self.size = 0    #- size of message in this slot, up to max_message_size
 
-class SSTRow:    #- The variables and their initial values are not explicitly mentioned in the paper
-  """
-  Sec 3.4 Shared State Table: The SST. 2nd paragraph, Lines 1-6:
-  Derecho uses protocols that run on a novel replicated data structure called the shared state table, or SST. 
-  The SST offers a tabular distributed shared memory abstraction. 
-  Every member of the top-level group holds its own replica of the entire table, in local memory.
-  Within this table, there is one identically formatted row per member. 
-  A member has full read/write access to its own row but is limited to read-only copies of the rows associated with other members.
-  
-  A list of SSTRows form a Shared State Table (SST) (source: 3.4 Shared State Table: The SST, paragraph 2, line 3
-  A copy of the SST is stored by each Node. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
-  A.1.1 SST.
-  """
-                                      # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
-                                      # sst_row->sst[row_rank]
-                                      # row_rank->int
-                                      # sst_column->sst[*].column_name
-                                      # sst_entry->sst_row.column_name // e.g. sst[0].stable_msg_index[0]
+class SSTRow:  #- The variables and their initial values are not explicitly mentioned in the paper
+  """a row in the SST: shared state table"""
+
+  # Sec 3.4 Shared State Table: The SST. 2nd paragraph, Lines 1-6:
+  # Derecho uses protocols that run on a novel replicated data structure 
+  # called the shared state table, or SST. 
+  # The SST offers a tabular distributed shared memory abstraction. 
+  # Every member of the top-level group holds 
+  # its own replica of the entire table, in local memory.
+  # Within this table, there is one identically formatted row per member. 
+  # A member has full read/write access to its own row but
+  # is limited to read-only copies of the rows associated with other members.
+  #- A list of SSTRows form a Shared State Table (SST) (source: 3.4 Shared State Table: The SST, paragraph 2, line 3 (where? not copied?)
+  #-A copy of the SST is stored by each Node. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4) (where? not copied?)
+  #
+  # A.1.1 SST.
+  # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
+  # sst_row->sst[row_rank]
+  # row_rank->int
+  # sst_column->sst[*].column_name
+  # sst_entry->sst_row.column_name // e.g. sst[0].stable_msg_index[0]
   def __init__(self, num_nodes, window_size):
     #- each field is a column name.
     #- if field is a LIST, it stores a value for each other node based on the index of the node.
@@ -60,22 +66,22 @@ class SSTRow:    #- The variables and their initial values are not explicitly me
     self.num_installed = 0     #- number of `changes` applied or installed to the current dode's SST
     self.min_latest_received = [-1] * num_nodes    #- LIST; for each node, minimum index of message received from the node
     self.latest_received_index = [-1] * num_nodes  #- LIST; for each node, index of latest message received from the node
-    self.ragged_edge_computed = True     #- whether the ragged trim is finalized for this node after a failure. 
+    self.ragged_edge_computed = True     #- whether the ragged trim is finalized for this node after a failure 
 					 #- The leader proposes the final trim of SST based on the committed messages
     self.latest_delivered_index = -1     #- index of the last message successfully delivered by the current node to all nodes
     self.global_index = -1               #- global message index counter, used for total ordering of messages in the system
     self.slots = [Slot() for x in range(window_size)]  #- each Slot stores the new message recieved by the current node
 
 class View(): 
-  """A view holds the metadata of an epoch"""
+  """A view holds the metadata of an epoch""" #-(source for these?)
+
   def __init__(self, num_nodes, leader_rank=0):
     self.max_rank = num_nodes  #- max rank in the SST in the current view, basically the number of nodes in the systems
     self.leader_rank = 0       #- rank of the leader in the currrent view
     self.failed = [False] * num_nodes  #- true against index of each node's rank if a process is deemed 'failed' in the view
-                                       # (for each node, whether the node is deemed 'failed' in the current view)
+                                       #- (for each node, whether the node is deemed 'failed' in the current view)
     self.wedged = False                #- whether the view is 'wedged' by the system
     self.members = [None] * num_nodes  #- list of members (nodes) in the current view
-
 
 class Node(process):
 
@@ -96,7 +102,7 @@ class Node(process):
     else:
       setattr(sst[row], col, val)            #- if it's not a list, just set the value to the new val passed
     message = ('rdma_write_sst', row, col, val, index)  #- create an update message to broadcast the update to others nodes
-    message_tagged = ('data' if message[2] == "slots" else 'control',) + message ## new for separating data and control
+    message_tagged = ('data' if message[2] == "slots" else 'control',) + message #- new for separating data and control
     output("====", message_tagged)
     send(message_tagged, to=(nodes-{self}))         #- send the update message to other nodes, so they update their local copies
 
@@ -115,11 +121,13 @@ class Node(process):
       setattr(curr_view, col, val)           #- if its not a list, just set the value to the new val passed
     send(('rdma_write_view', col, val, index), to=(nodes-{self}))
                                              #- send update message to other nodes, so they update their local copies of the view
+
+  #- The following aggregation functions are not defined in the paper.
   def min_not_failed(col):
     """min value of column named col for non-suspected nodes in the sst of this node"""
     return min({getattr(sst[row], col) for row in range(len(sst)) if not sst[my_rank].suspected[row]})
 
-  def _min(col, index = None):
+  def min_(col, index = None):
     """min value of column col, at given index for col being a list, in the sst of this node"""
     if index is None:
       return min({getattr(sst[row], col) for row in range(len(sst)) if getattr(sst[row], col) >= 0})
@@ -148,20 +156,31 @@ class Node(process):
     if len(G) < 1: return 0
     return max((sst[my_rank].min_latest_received[n] * len(G) + n) for n in range(len(G)))
 
+  # A.1.2 Message Ordering
+  # Message: M(i, k) represents a message with i as the sender rank and 
+  # k as the sender index.
+  # For example, the zeroth message by sender number 2 is M(2, 0). 
+  # We have a round-robin ordering imposed on messages. 
+  # M(i1, k1) < M(i2, k2) <==> k1 < k2 ||(k1 == k2 and i1 < i2).
+  # The global index of M(i, k), gi(M(i, k)) is the position of this message
+  # in the round-robin ordering. 
+  # So M(0, 0) has a global index of 0, M(1, 0) has a global index of 1, 
+  # and so on
   def gi(i, k):
     """global index of a message given sender node's rank i and sender's index k of the message""" 
     return i * len(G) + k                 # gi(M(i, k)) = i ∗ |G| + k
 
   # A.2.2 Initialization.
-  def setup(nodes, num_nodes, my_rank, window_size, sim, num_requests):
+  def setup(nodes, my_rank, window_size, sim):
                                           # for i in 1 to n {
                                           #   for j in 1 to n {
                                           #     sst[i].received_num[j] = -1; }
                                           #   for k in 1 to window_size {
                                           #     sst[i].slots[k].buf = nullptr
                                           #     sst[i].slots[k].index = 0 }}
-    self.sst = [SSTRow(num_nodes, window_size) for x in range(num_nodes)]   #- initialized the local SST for this node
-    self.sent_num = -1                    # sent_num = -1     #- helper variable to maintain a count of messages sent by this node
+    self.num_nodes = len(nodes)           #- number of nodes in the system
+    self.sst = [SSTRow(num_nodes, window_size) for _ in range(num_nodes)]   #- initialized the local SST for this node
+    self.sent_num = -1                    #- sent_num = -1   #- helper variable to maintain a count of messages sent by this node
     self.curr_view = View(num_nodes)      #- initialize the local view object
     self.G = nodes                        #- the set of nodes in the system
     self.msgs = {}                        #- messages sent/received by this node, indexed by the global index of each message
@@ -185,8 +204,8 @@ class Node(process):
         write_sst(my_rank, 'wedged', True)                                   #     sst[my_rank].wedged = true;
                                                                              #     // |= acknowledged leader's proposal and wedged the current view
                                                                              #   }}
-      elif curr_view.leader_rank == my_rank and  min_not_failed('num_acked') > sst[my_rank].num_committed: # when (curr_view.leader_rank == my_rank and 
-        #min_not_failed('num_acked') > sst[my_rank].num_committed:      #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
+      elif (curr_view.leader_rank == my_rank and                          # when (curr_view.leader_rank == my_rank and 
+            min_not_failed('num_acked') > sst[my_rank].num_committed):    #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
         output("commit_proposal_leader")                                  #   // |= K U\F ( acknowledged a new proposal )
         write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))  #   sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
                                                                           #   // |= commited acknowledged proposals
@@ -199,16 +218,12 @@ class Node(process):
         await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[∗].wedged) == true) {
         output("terminate epoch")                #     // |= K U\F (current view is wedged)
         terminate_epoch()                        #     terminate_epoch(); }}
-      elif timeout(2):                   #- runs the below message protocols always
+      elif timeout(0.1): ##some(received(_)):                    #- runs the below message protocols always
         receive_msg()         # always 
         stability_delivery()  # always
-        num_requests -= 0.5       #- to help terminate we only do (2*num_requests) rounds of checking for new requests
-        if num_requests == 0:     #- special check to help terminate the program after num_requests rounds of delivery
-          break
-    #output("SST: ", sst)
-    send('done', to=parent())   #- sending Done to parent and exiting         
-    output("Final agreed new view: ", curr_view.members)
-    output('terminating NODES')
+    # output("SST: ", sst)
+    # output("Final agreed new view: ", curr_view.members)
+
 
   # A.2.3 Sending. First the sending node reserves one of the slots:
   #- resolve the available slot before sending the message
@@ -217,7 +232,7 @@ class Node(process):
     if msg_size > max_msg_size: return None       #   assert(msg_size <= max_msg_size);
                                                   #   // A Slot can be reused if the previos message in that slot was received by everyone
                                                   #   // Combine it with the FIFO ordering of messages
-    completed_num = _min("received_num", my_rank) #   completed_num = Min{sst[*].received_num[my_rank]};
+    completed_num = min_("received_num", my_rank) #   completed_num = Min{sst[*].received_num[my_rank]};
     if sent_num - completed_num < window_size:    #   if (sent_num - completed_num < window_size) {
       return None                                 #     return nullptr; }
     slot = (sent_num + 1) % window_size           #   slot = (sent_num + 1) % window_size;
@@ -247,7 +262,7 @@ class Node(process):
                                                            #- above line is slightly modified (removed +1 on RHS)
         write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
                                                            #      ++sst[my_rank].received_num[i];
-        recv((i, sst[my_rank].received_num[i]))              #      recv(M(i, sst[my_rank].received_num[i])); }}}
+        recv((i, sst[my_rank].received_num[i]))            #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
   #- minimun index received by this node and the lagging node according to this Node's SST
   def get_min_idx_rec():  # (min,argmin) i sst[my_rank].latest_received_index[i];   
@@ -282,7 +297,7 @@ class Node(process):
   # A.3.2 Stability and Delivery
   #- Calculates the next global index for message delivery 
   def stability_delivery():                   # always {
-    stable_msg_index = _min("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
+    stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
                                               #   // |= K_me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
     to_delete = []
     for msg in msgs:                          #   for (msg : msgs) {
@@ -395,9 +410,9 @@ class Node(process):
     sst[my_rank].num_installed = sst[leader_rank].num_committed  #- the num_installed column in the SST is updated with num_committed;
     next_view = View(num_nodes - len(sst[my_rank].changes))      #- creating a new view object 
     next_view.leader_rank = curr_view.leader_rank                #- updating the leader rank in the new view object	
-    next_view.members = curr_view.members 							 #   next_view.members = curr_view.members
+    next_view.members = curr_view.members                #   next_view.members = curr_view.members
     for change_index in range(len(sst[my_rank].changes)):#   for (change_index = 0; change_index < committed_count; change_index++) {
-      node_id = next_view.members[sst[my_rank].changes[change_index]] # (seem so indirect?)
+      node_id = next_view.members[sst[my_rank].changes[change_index]]  #- (seem so indirect?)
                                                          #      node_id = sst[my_rank].changes[change_index]; 
       output("delete node: ", node_id, sst[my_rank].changes[change_index])
                                                          #     // if node already a member, the change is to remove the node;
@@ -425,7 +440,7 @@ class Node(process):
       write_sst(my_rank, "ragged_edge_computed", True)   #     sst[my_rank].ragged_edge_computed = true; }
     else:                                                #   else {
       for n in range(len(G)):                            #     for (n = 0; n < |G|; ++n) {
-        write_sst(my_rank, "min_latest_received", _min("latest_received_index", n), n)
+        write_sst(my_rank, "min_latest_received", min_("latest_received_index", n), n)
                                                          #       sst[my_rank].min_latest_received[n] = Min(sst[∗].latest_received_index[n]);
                                                          #       // |= K_me (sst[my_rank].min_latest_received[n] number of messages from n are safe for delivery) }
       write_sst(my_rank, "ragged_edge_computed", True)   #     sst[my_rank].ragged_edge_computed = true;
@@ -456,50 +471,61 @@ class Node(process):
         deliver_upcall(msgs[global_index])                   #       deliver_upcall(msgs[global_index]); }}}
 
   #- Recieves message for an RDMA write from any node and updates the local SST
-  def receive(msg = (_, 'rdma_write_sst', row, col, val, index)):  ## added _ to filter out 'data' and 'control'
-    # update the local SST
+  def receive(msg = (_, 'rdma_write_sst', row, col, val, index)):  #- added _ to filter out 'data' and 'control'
+    # update the local SST (whose comment?)
     output("Received message:" , ('rdma_write_sst', row, col, val, index))   
-    if index is not None:                  #- if a non null 'index' is passed, implies updating a list
-      newval = getattr(sst[row], col)      #- retrieve the current list into newval
-      newval[index] = val                  #- update the value at index to the val passed
-      setattr(sst[row], col, newval)       #- set the newval to the local sst row
-    else:
-      setattr(sst[row], col, val)          #- if its not a list, just set the value to the new val passed
+    if index is not None:               #- if a non null 'index' is passed, implies updating a list
+      newval = getattr(sst[row], col)   #- retrieve the current list into newval
+      newval[index] = val               #- update the value at index to the val passed
+      setattr(sst[row], col, newval)    #- set the newval to the local sst row
+    else:                              
+      setattr(sst[row], col, val)       #- if its not a list, just set the value to the new val passed
 
   #- Recieves message for an RDMA write, update the local view
   def receive(msg = ('rdma_write_view', col, val, index)):
-    # update the local view
+    # update the local view (whose comments?)
     output("Received message:", ('rdma_write_view', col, val, index))
-    if index is not None:                   #- if a non null 'index' is passed, implies updating a list
-      newval = getattr(curr_view, col)      #- retrieve the current list into newval
-      newval[index] = val                   #- update the value at index to the val passed
-      setattr(curr_view, col, newval)       #- set the newval to the local view object
+    if index is not None:               #- if a non null 'index' is passed, implies updating a list
+      newval = getattr(curr_view, col)  #- retrieve the current list into newval
+      newval[index] = val               #- update the value at index to the val passed
+      setattr(curr_view, col, newval)   #- set the newval to the local view object
     else:                               
-      setattr(curr_view, col, val)          #- if its not a list, just set the value to the new val passed
+      setattr(curr_view, col, val)      #- if its not a list, just set the value to the new val passed
 
+## The rest is for simulation and testing 
 class Sim(process):
   """Sim process simulates a failure scenario"""
-  def setup(nodes, num_requests, test_failure): pass
-  
+  def setup(nodes, num_requests, test_failure):
+    num_responses = 0
+
   def run():
-    output(nodes)
-    for  tid in range(num_requests):
+    output("Nodes:", nodes)
+    for tid in range(num_requests):
       send(('request', tid), to=random.sample(nodes,1))
+       #- await(timeout(0.1))   #- so can receive responses
+#      if await False: pass        
+#      elif timeout(0.001): pass
     
     if test_failure:  #failing last node
       send(('failure', len(nodes)-1), to= nodes)  #- send index of the last node as a failed node to all nodes
       output("Sent failure message to nodes")
   
-    await(received('done', from_=parent()))      #- wait till Main sends the "end" message 
+    if await (len(setof(tid, received(('response', tid)))) == num_requests):
+      output("---- ---- all responded")
+    elif timeout(15): 
+      output("---- ---- timeout!!!")
+    #- end(nodes)   #- does not work, so let parent proc do, as below
+    send('done', to=parent())
    
   def receive(msg= ('response', tid), from_= p):
-    output("#### Received tid = ", tid, " from ", p)      #- Print the response received from the system
+    output("---- Received tid = ", tid, " from ", p)      #- Print the response received from the system
 
-#- take the number of nodes as input parameters during runtime 
+#- take the number of nodes as input parameters during runtime, default
 def main():
-  config(clock is Lamport, visualize is True)
+  t1 = time.time()
+  # config(channel is fifo, clock is Lamport, visualize is True)
   config(channel is fifo, clock is lamport, visualize is {
-        # colors: override message and process colors, defaults to random
+        # colors: override message and process colors, defaults to random (to fix random?)
         #         supports any valid CSS color value
         # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
         # examples: Transparent, Yellow, DarkRed, rgb(255, 255 ,0),
@@ -517,17 +543,18 @@ def main():
 
         }
     })
-  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3  #- take the number of nodes in the system as input
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 3  #- take the number of requests from applications
-  window_size = num_requests + 5                                           #- set window_size to num_requests + 5
-  test_failure = False   #- Set to True to test failure scenario
+  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3     #- number of nodes in the system
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 3  #- number of requests from applications
+  window_size = num_requests + 5                               #- window_size, should be small, but added num_request for correctness for now
+  test_failure = False   #- set to True to test a failure scenario
 
-  nodes = new(Node, num= num_nodes)                         #- create a set of node processes
-  sim = new(Sim, (nodes, num_requests, test_failure))                     #- create and set up the crash and client simulator process
-  for (rank, node) in enumerate(nodes):
-    setup(node, (nodes, num_nodes, rank, window_size, sim, num_requests))
-  start(nodes)        #- start the Nodes
-  start(sim)          #- start the Sim process
-  await(len(setof(a, received('done', from_=a))) >= len(nodes)-1)  #- wait until received 'done' from all nodes but the crashed
-  send('done', to=sim)    #- send 'done' message for the Sim process to exit
-  #end(sim|nodes)
+  nodes = new(Node, num= num_nodes)                    #- create Node processes
+  sim = new(Sim, (nodes, num_requests, test_failure))  #- create and set up crash and client simulator process
+  for (rank, node) in enumerate(nodes):                #- setup Node processes
+    setup(node, (nodes, rank, window_size, sim))
+  start(nodes)            #- start Node processes
+  start(sim)              #- start the sim process
+  await(received('done')) #- wait to receive 'done' from the sim process
+  end(nodes)
+  end(sim)
+  print("--------- time:", time.time() - t1)
