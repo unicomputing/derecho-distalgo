@@ -44,8 +44,12 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
   # Within this table, there is one identically formatted row per member. 
   # A member has full read/write access to its own row but
   # is limited to read-only copies of the rows associated with other members.
-  ## A list of SSTRows form a Shared State Table (SST) (source: 3.4 Shared State Table: The SST, paragraph 2, line 3 (where? not copied?)
-  ##A copy of the SST is stored by each Node. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4) (where? not copied?)
+  # Page 12, Sec 3.4 The SST offers a tabular distributed shared memory abstraction. 
+  # Every member of the top-level group holds its own replica of the entire table, in local memory. (source: 3.4 Shared State Table: The SST, paragraph 2, line 4)
+  # Within this table, there is one identically formatted row per member. A member has full read/write access to its own row 
+  # but is limited to read-only copies of the rows associated with other members
+  ## In this implementation a list of SSTRows objects form a Shared State Table (SST)
+  ## A copy of the SST is stored by each Node.
   #
   # A.1.1 SST.
   # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
@@ -73,7 +77,7 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
     self.slots = [Slot() for x in range(window_size)]  ## each Slot stores the new message recieved by the current node
 
 class View(): 
-  """A view holds the metadata of an epoch""" ##(source for these?)
+  """ ## A view holds the metadata of an epoch""" ## Understood from Fig.11 page 17
 
   def __init__(self, num_nodes, leader_rank=0):
     self.max_rank = num_nodes  ## max rank in the SST in the current view, basically the number of nodes in the systems
@@ -168,7 +172,7 @@ class Node(process):
   # and so on
   def gi(i, k):
     """global index of a message given sender node's rank i and sender's index k of the message""" 
-    return i * len(G) + k                 # gi(M(i, k)) = i ∗ |G| + k
+    return (k) * len(G) + i                 # gi(M(i, k)) = i ∗ |G| + k
 
   # A.2.2 Initialization.
   def setup(nodes, my_rank, window_size, sim):
@@ -240,6 +244,7 @@ class Node(process):
     return sst[my_rank].slots[slot].buf           #   return sst[my_rank].slots[slot].buf; }
   
   ## increment the slot and send the message
+  # the application writes the message contents in the buffer and calls send:
   def send_msg(msg):
     output("send_msg", msg)
     slot = (sent_num + 1) % window_size           #   slot = (sent_num + 1) % window_size;
@@ -266,8 +271,8 @@ class Node(process):
 
   ## minimun index received by this node and the lagging node according to this Node's SST
   def get_min_idx_rec():  # (min,argmin) i sst[my_rank].latest_received_index[i];   
-    min_ind = min(lri for lri in sst[my_rank].latest_received_index if lri >= 0) ## min value > 0 (as init value is -1)
-    lagging_node = sst[my_rank].latest_received_index.index(min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
+    min_ind = min(lri for lri in sst[my_rank].latest_received_index if lri >= 0) ## min value >= 0 (as init value is -1)
+    lagging_node = max(rank for rank in range(len(sst[my_rank].latest_received_index)) if sst[my_rank].latest_received_index[rank] == min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
     return min_ind,lagging_node
 
 
@@ -299,13 +304,14 @@ class Node(process):
   def stability_delivery():                   # always {
     stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
                                               #   // |= K_me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
+    output("min_global_index", stable_msg_index)
     to_delete = []
     for msg in msgs:                          #   for (msg : msgs) {
       if msg <= stable_msg_index:             #     if (msg.global_index <= min_stable_msg_index) {
         deliver_upcall(msgs[msg])             #       deliver_upcall(msg);
         to_delete.append(msg)                 ##  store the messages that needs to be deleted, to delete later 
     for d in to_delete:
-      del msgs[d]                         #       msgs.remove(msg.global_index); }}
+      del msgs[d]                             #   msgs.remove(msg.global_index); }}
     write_sst(my_rank, "latest_delivered_index", stable_msg_index)
                                               #   sst[my_rank].latest_delivered_index = stable_msg_index }
                                               # // |= K_me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
@@ -472,7 +478,7 @@ class Node(process):
 
   ## Recieves message for an RDMA write from any node and updates the local SST
   def receive(msg = (_, 'rdma_write_sst', row, col, val, index)):  ## added _ to filter out 'data' and 'control'
-    # update the local SST (whose comment?)
+    ## update the local SST
     output("Received message:" , ('rdma_write_sst', row, col, val, index))   
     if index is not None:               ## if a non null 'index' is passed, implies updating a list
       newval = getattr(sst[row], col)   ## retrieve the current list into newval
@@ -483,7 +489,7 @@ class Node(process):
 
   ## Recieves message for an RDMA write, update the local view
   def receive(msg = ('rdma_write_view', col, val, index)):
-    # update the local view (whose comments?)
+    ## update the local view
     output("Received message:", ('rdma_write_view', col, val, index))
     if index is not None:               ## if a non null 'index' is passed, implies updating a list
       newval = getattr(curr_view, col)  ## retrieve the current list into newval
