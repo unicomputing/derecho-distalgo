@@ -550,7 +550,7 @@ class Sim(process):
       cur_metric.cpu_end_time = time.clock()
       cur_metric.run_end_time = time.time()
       cur_metric.success = True
-    output("---- Received tid = ", tid, " from ", p)      ## Print the response received from the system
+      output("---- Received tid = ", tid, " from ", p)      ## Print the response received from the system
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
@@ -580,6 +580,7 @@ def main():
   window_size = num_requests + 5                               ## window_size, should be small, but added num_request for correctness for now
   test_failure = False   ## set to True to test a failure scenario
 
+  throughputs = []
   while nreps > 0:
     t1 = time.time()
     nodes = new(Node, num= num_nodes)                    ## create Node processes
@@ -589,9 +590,10 @@ def main():
     start(nodes)            ## start Node processes
     start(sim)              ## start the sim process
     await(received(('done'), from_ =sim)) ## wait to receive 'done' from the sim process
+    throughputs.append((time.time() - t1)/num_requests)
+    print("--------- time:", time.time() - t1)
     end(nodes)
     end(sim)
-    print("--------- time:", time.time() - t1)
     nreps -=1
 
   cpu_times = []
@@ -609,5 +611,6 @@ def main():
 
   output("AVG cpu_times", round(sum(cpu_times)/len(cpu_times), 5))
   output("AVG run_times", round(sum(run_times)/len(run_times), 5))
+  output("AVG throughput", round(sum(throughputs)/len(throughputs), 5))
   output("FAILURES", failures)
   # print all values 
