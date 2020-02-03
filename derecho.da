@@ -14,6 +14,7 @@
 import sys
 import random
 import time
+import os
 
 class Slot:
   """a slot that store a message"""
@@ -256,8 +257,8 @@ class Node(process):
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)      
     sent_num += 1                                 #   sent_num++; }
   
-  def receive(msg=('request', tid)):      ## receive request from application (Sim)
-    send_msg(tid)                         ## send the message in the next slot
+  def receive(msg=('request', msg)):      ## receive request from application (Sim)
+    send_msg(msg)                         ## send the message in the next slot
 
   # A.2.4 Receiving.
   ## receives a message, increments the current slot based on thewindow size and receives the message
@@ -308,8 +309,8 @@ class Node(process):
 
   def deliver_upcall(msg):
     if sst[msg[0]].slots[msg[1]%window_size].buf is not None:
-      output(" deliver_upcall ", sst[msg[0]].slots[msg[1]%window_size].buf)       ## No implementation provided in the pseudocode
-      send(('response', sst[msg[0]].slots[msg[1]%window_size].buf), to= sim)      ## Send the message back to Sim
+      #output(" deliver_upcall ", sst[msg[0]].slots[msg[1]%window_size].buf)       ## No implementation provided in the pseudocode
+      send(('response', sst[msg[0]].slots[msg[1]%window_size].buf[0]), to= sim)      ## Send the message back to Sim
 
   # A.3.2 Stability and Delivery
   ## Calculates the next global index for message delivery 
@@ -524,14 +525,14 @@ class RequestMetrics:
 ## The rest is for simulation and testing 
 class Sim(process):
   """Sim process simulates a failure scenario"""
-  def setup(nodes, num_requests, test_failure):
+  def setup(nodes, num_requests, test_failure, msg_size):
     self.metrics = {} ## stores the metrics per request id
 
   def run():
     output("Nodes:", nodes)
     for tid in range(num_requests):
       metrics[tid] = RequestMetrics(time.clock(), time.time())
-      send(('request', tid), to=random.sample(nodes,1))
+      send(('request', (tid,os.urandom(msg_size))), to=random.sample(nodes,1))
     
     if test_failure:  #failing last node
       send(('failure', len(nodes)-1), to= nodes)  ## send index of the last node as a failed node to all nodes
@@ -577,6 +578,7 @@ def main():
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3     ## number of nodes in the system
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 3  ## number of requests from applications
   nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1         ## number of repetitions to calculate the metrics
+  msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the message sent to the derecho system 
   window_size = num_requests + 5                               ## window_size, should be small, but added num_request for correctness for now
   test_failure = False   ## set to True to test a failure scenario
 
@@ -584,7 +586,7 @@ def main():
   while nreps > 0:
     t1 = time.time()
     nodes = new(Node, num= num_nodes)                    ## create Node processes
-    sim = new(Sim, (nodes, num_requests, test_failure))  ## create and set up crash and client simulator process
+    sim = new(Sim, (nodes, num_requests, test_failure, msg_size))  ## create and set up crash and client simulator process
     for (rank, node) in enumerate(nodes):                ## setup Node processes
       setup(node, (nodes, rank, window_size, sim))
     start(nodes)            ## start Node processes
