@@ -29,7 +29,7 @@ class Slot:
   # The vector received_num holds 
   # counters of the number of messages received from each node.
   def __init__(self):
-    self.index = -1  ## index position of this slot in vector of slots
+    self.index = 0   ## index position of this slot in vector of slots
     self.buf = None  ## message in this slot, of up to max_message_size characters
     self.size = 0    ## size of message in this slot, up to max_message_size
 
@@ -61,7 +61,7 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
   def __init__(self, num_nodes, window_size):
     ## each field is a column name.
     ## if field is a LIST, it stores a value for each other node based on the index of the node.
-    self.suspected = [False] * num_nodes   ## LIST; for each node, whether the node is suspected to be crashed
+    self.suspected = [False] * num_nodes ## LIST; for each node, whether the node is suspected to be crashed
     self.num_committed = 0     ## number of changes committed by the current node, as suggested by the Leader
     self.num_acked = 0         ## number of changes acknowleged by the current node, as suggested by the Leader
     self.received_num = [-1] * num_nodes ## LIST; for each node, number of messages received by the current node
