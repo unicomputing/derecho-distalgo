@@ -251,9 +251,13 @@ class Node(process):
                                                  #     // |= K U\F (current view is wedged)
         terminate_epoch()                        #     terminate_epoch(); }}
       elif timeout(0.1):      ## runs the below message protocols always
+        --receive_pending_msg
         suspect()             # always
+        --receive_pending_msg
         receive_msg()         # always 
+        --receive_pending_msg
         stability_delivery()  # always
+        --receive_pending_msg
 
   # A.2.3 Sending. First the sending node reserves one of the slots:
   ## resolve the available slot before sending the message
@@ -302,7 +306,7 @@ class Node(process):
         recv((i, sst[my_rank].received_num[i]))            #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
   ## minimun index received by this node and the lagging node according to this Node's SST
-  def get_min_idx_rec():  # (min,argmin) i sst[my_rank].latest_received_index[i];   
+  def get_min_idx_rec():  # (min,argmin)i sst[my_rank].latest_received_index[i];   
     min_ind = min(sst[my_rank].latest_received_index[rank] for rank in range(len(sst[my_rank].latest_received_index)) if rank != my_rank)
     lagging_node = max(rank for rank in range(len(sst[my_rank].latest_received_index)) if sst[my_rank].latest_received_index[rank] == min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
     return min_ind,lagging_node
@@ -422,7 +426,7 @@ class Node(process):
     output("in suspect function")
     for r in range(len(sst)):                            #   for(every row r and s) {
       for s in range(len(sst)):
-        if sst[r].suspected[s]:                          #     if(sst[r].suspected[s] == true) {
+        if sst[r].suspected[s] and not sst[my_rank].suspected[s]: #     if(sst[r].suspected[s] == true) { ### ? Should there be a condition to check if my_rank, suspected is false? will avoid message sends
                                                          #       // failure propagation---local node also suspects s
           write_sst(my_rank, 'suspected', True, s)       #       sst[my_rank].suspected[s] = true
                                                          #     }}
@@ -464,11 +468,11 @@ class Node(process):
     for change in sst[my_rank].changes:                  ### ?? Remove
       output("change: ", change)                         ### ?? Remove
                                                          #   //calculate next view membership
+    --new_view                                           ## yeild to deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)
     output("number of committed_count on leader is: ", committed_count)
                                                          #   committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
-    sst[my_rank].num_installed = sst[leader_rank].num_committed  ## the num_installed column in the SST is updated with num_committed;
     next_view = View(num_nodes)                          ## creating a new view object
     next_view.members = curr_view.members                #   next_view.members = curr_view.members
     for change_index in range(committed_count):          #   for (change_index = 0; change_index < committed_count; change_index++) {
@@ -476,15 +480,17 @@ class Node(process):
       output("The current change includes node: ", node_id)
                                                          #     // if node already a member, the change is to remove the node;
       if node_id in next_view.members:                   #     if (curr_view.contains(node_id) == true) {
+        output("Removing node/member to the system: ", node_id)
         next_view.remove_member(node_id)                 #       new_view.members.remove(node_id); } ## new_view should be next_view
       else:                                              #     else {
+        output("Adding new node/member to the system: ", node_id)
         next_view.add_member(node_id)                    #       next_view.members.append(node_id); }} 
     if leader_rank == my_rank:                           #   if (leader_rank == my_rank) {
       leader_ragged_edge_cleanup()                       #     leader_ragged_edge_cleanup();
     elif await(sst[leader_rank].ragged_edge_computed):   #   else { when (sst[leader_rank].ragged_edge_computed == true) { 
       non_leader_ragged_edge_cleanup()                   #     non_leader_ragged_edge_cleanup(); }}
     curr_view = next_view                                #   curr_view = next_view;
-    reset_system(curr_view)
+    reset_system(curr_view, sst[my_rank], committed_count)
     output ('new view has been installed with members: ', curr_view.members)#   // |= new view installed                                                         
                                                          # }                  
 
@@ -523,7 +529,7 @@ class Node(process):
     max_global_index = get_max_gi()                          #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
     for global_index in range(curr_global_index + 1, max_global_index + 1):
                                                              #   for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
-      sender_index = global_index / len(G)                   #     ender_index = global_index / |G|;
+      sender_index = global_index / len(G)                   #     sender_index = global_index / |G|;
       sender_rank = global_index % len(G)                    #     sender_rank = global_index % |G|;
       if (sender_index <= sst[my_rank].min_latest_received[sender_rank]):
                                                              #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
@@ -540,7 +546,6 @@ class Node(process):
       newval = getattr(sst[row], col)   ## retrieve the current list into newval
       newval[index] = val               ## update the value at index to the val passed
       setattr(sst [row], col, newval)   ## set the newval to the local sst row
-      output("Value for received write sst for col: ", col, " is ", newval[index])
     else:                              
       setattr(sst[row], col, val)       ## if its not a list, just set the value to the new val passed
 
@@ -556,7 +561,7 @@ class Node(process):
       setattr(curr_view, col, val)      ## if its not a list, just set the value to the new val passed
 
   ## Reset the system after a membership change in the new epoch
-  def reset_system(view):
+  def reset_system(view, old_sst_row, num_changes_installed):
     self.nodes = set(view.members)        ## nodes in the system based on the members of the given view
     self.num_nodes = len(nodes)           ## number of nodes in the system
     self.G = nodes                        ## nodes in the system, used to calculate global index
@@ -564,6 +569,11 @@ class Node(process):
     self.msgs = {}                        ## reset the messages dictionary
     self.sst = [SSTRow(num_nodes, window_size) for _ in range(num_nodes)] ## reinitialize sst 
     self.my_rank = view.members.index(self) ## set my_rank based on the index in the new_view
+    write_sst(my_rank, 'changes', old_sst_row.changes[num_changes_installed:])
+    write_sst(my_rank, 'num_installed', old_sst_row.num_installed + num_changes_installed)
+    write_sst(my_rank, 'num_changes', old_sst_row.num_changes)
+    write_sst(my_rank, 'num_committed', old_sst_row.num_committed)
+    write_sst(my_rank, 'num_acked', old_sst_row.num_acked)
 
 class RequestMetrics:
   """Metric class to hold all relevant metrics for a particular request"""
@@ -581,6 +591,7 @@ class Sim(process):
   def setup(nodes, num_requests, test_failure, msg_size):
     self.metrics = {}                     ## stores the metrics per request id
     self.n_nodes = len(nodes)
+    self.received_count = 0
 
   def run():
     output("Nodes:", nodes)
@@ -598,7 +609,6 @@ class Sim(process):
         send(('failure', len(nodes)-2), to= list(nodes)[0])
         output("Sent failure message to first node")
         failure_injected = True
-      time.sleep(1)
     output('done sending requests to the derecho system')
 
     while True:
@@ -621,7 +631,8 @@ class Sim(process):
       cur_metric.cpu_end_time = time.clock()
       cur_metric.run_end_time = time.time()
       cur_metric.success = True
-      output("---- Received tid = ", tid, " from ", p)      ## Print the response received from the system
+      received_count += 1
+      output("---- Received tid = ", tid, " from ", p, " with received_count: ", received_count)      ## Print the response received from the system
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
@@ -649,7 +660,7 @@ def main():
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 200## number of requests from applications
   nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1         ## number of repetitions to calculate the metrics
   msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the message sent to the derecho system
-  window_size = 10                                             ## window_size, should be small
+  window_size = 500                                             ## window_size, should be small
   test_failure = True                                          ## set to True to test a failure scenario
 
   throughputs = []
