@@ -447,8 +447,8 @@ class Node(process):
         write_sst(my_rank, 'wedged', True)               #       sst[my_rank].wedged = true
         leader_selection()                               ## adding a call for leader selection, to maintain sequence of actions
 
-        if curr_view.leader_rank == my_rank and s not in sst[my_rank].changes:
-                                                         #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) {
+        if curr_view.leader_rank == my_rank and list(nodes)[s] not in sst[my_rank].changes:
+                                                         #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) { ## modified ... and sst[my_rank].changes.contains(nodeId(s)) == false
           node_id = list(nodes)[s]
           output("Removal of the node ", s, " with id: ", node_id, " proposed")
           # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed; ## not required in python for position
