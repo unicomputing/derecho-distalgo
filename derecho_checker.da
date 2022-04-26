@@ -1,0 +1,215 @@
+from derecho import Node
+from derecho import RequestMetrics
+import json
+import os
+import time
+
+class NodeX(process, Node):
+  def setup(checker, nodes, my_rank, window_size, sim):
+    super().setup(nodes, my_rank, window_size, sim)
+        
+  def send(m, to):
+    super().send(('sent', m, to), to=checker)
+    super().send(m, to)
+
+  def receive(msg=m, from_=fr):
+    super().send(('rcvd', m, fr), to=checker)
+
+class LB(process):
+  def setup(checker, nodes, num_requests, window_size, test_failure): 
+    self.metrics = {}                     ## stores the metrics per request id
+    self.n_nodes = len(nodes)             ## number of active nodes in the system, initially equal to the number of initial nodes
+    self.msg_size = 1                     ## size of the message sent to the derecho system
+    self.received_count = 0               ## number of responses received
+    self.num_pending_requests = 0         ## number of requests pending to be served
+    self.max_pending_requests = n_nodes * window_size   ## maximum number of concurrent pending requests served by the system
+    self.n_failed = 2                     ## number of nodes to be failed
+
+  def run():
+    failure_injected = False              ## tracks if the failure has been injected
+    while True:
+      if await (len(setof(tid, received(('response', tid)))) == num_requests):  ## wait until all the responses have been received
+        output("---- all responses received ----")
+        send(('metrics', list(metrics.values())), to= parent())                 ## send the metrics of the requests back to the parent
+        break
+      elif timeout(5):
+        output("---- timeout, resending " + str(num_requests - received_count) + " number of pending requests ----")
+        n = -1
+        for tid in range(num_requests):
+          --receive_pending_msgs                                    ## yeild to receive pending messages
+          if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
+            continue
+          await (num_pending_requests < max_pending_requests)       ## await for the number of pending requests to drop below the maximum request serving capacity of the system
+
+          if tid not in metrics:                                    ## check if the request has not already been sent
+            metrics[tid] = RequestMetrics(time.clock(), time.time())## add the request id to the metrics for the new request
+
+          n = (n+1)%n_nodes                               ## in round-robin manner, select the next server number to send the next request to
+
+          output('sending request ', tid, ' to node: ', n)
+          send(('request', (tid,os.urandom(msg_size))), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
+          num_pending_requests += 1                                 ## increment the number of pending requests(non served requests) sent to the system
+          
+          # if test_failure and not failure_injected and tid == num_requests/2:   ## external failure detector, sending failure detection for first and the second last node
+          #   send(('failure', 0), to= nodes[1])            ## send index of the first node/leader node as a failed node to the second node
+          #   send(('failure', n_nodes-2), to= nodes[1])    ## send index of the second last node as a failed node to the second node
+          #   output("Failure messages sent to the last node")
+          #   failure_injected = True                       ## set the boolean to true after the failure message has been sent to the derecho server/system
+
+    output("All requests served, sending done to parent")
+    send('done', to=parent())                             ## respond with done to the parent
+
+  def receive(msg= ('response', tid)):
+    if not metrics[tid].success:
+      cur_metric = metrics[tid]
+      cur_metric.cpu_end_time = time.clock()
+      cur_metric.run_end_time = time.time()
+      cur_metric.success = True
+      received_count += 1
+      num_pending_requests -= 1
+      output("received response for tid: ", tid, " received_count: ", received_count, " num_pending_requests: ", num_pending_requests)
+
+## Checker process is used as load balancer
+## The process distributes the load in a round-robin manner among all processes.
+## It keeps a count of number of pending messages/requests, and ensures the number
+## does not exceed the total number of pending/queued requests in the system.
+class Checker(process):
+  def setup(nodes, client, fileName, num_requests, window_size, test_failures): 
+    self.metrics = {}                     ## stores the metrics per request id
+    self.n_nodes = len(nodes)             ## number of active nodes in the system, initially equal to the number of initial nodes
+    self.msg_size = 1                     ## size of the message sent to the derecho system
+    self.received_count = 0               ## number of responses received
+    self.max_pending_requests = n_nodes * window_size   ## maximum number of concurrent pending requests served by the system
+    self.n_failed = 2                     ## number of nodes to be failed
+
+  def run():
+    await(len(setof(tid, received(('sent', ('response', tid), _)))) == num_requests)
+    output("All responses have been received by the client")
+    time.sleep(10)
+    output("Woken up from sleep, delivering any pending messages")
+    --receive_pending_msgs                                ## deliver pending messages received
+    output("delivered pending messages, writing statistics to the file")
+    f = open(fileName, "a")                               ## open file to write statistics of the run
+    f.write("************************************************\n")
+    check_safety(f)                                       ## check safety properties and write statistics to the file
+    f.write("************************************************\n")
+    f.close()                                             ## close the file 
+    output("done writing statistics to the file, sending done to parent")
+    send('done', to=parent())                             ## respond with done to the parent
+   
+  def check_safety(f_handle):
+    check_and_log_received_num_count(f_handle)
+    check_and_log_latest_received_index(f_handle)
+    check_and_log_global_index(f_handle)
+    check_and_log_latest_delivered_index(f_handle)
+    check_and_log_num_installed_count(f_handle)
+    check_and_log_num_committed_count(f_handle)
+
+  def check_and_log_received_num_count(f_handle):
+    log_data("received_num", f_handle)
+
+  def check_and_log_latest_received_index(f_handle):
+    log_data("latest_received_index", f_handle)
+
+  def check_and_log_global_index(f_handle):
+    log_data("global_index", f_handle)
+
+  def check_and_log_latest_delivered_index(f_handle):
+    log_data("latest_delivered_index", f_handle)
+
+  def check_and_log_num_installed_count(f_handle):
+    log_data("num_installed", f_handle)
+
+  def check_and_log_num_committed_count(f_handle):
+    log_data("num_committed", f_handle)
+
+  def log_data(data_type, f_handle):
+    for n in range(n_nodes):
+      val = max(setof(r, received(('sent', ('control','rdma_write_sst', _n, _data_type, r, _, _), _))) or [0])
+      to_write = "node: " + str(n) + " , " + data_type + ": " + str(val) + "\n"
+      f_handle.write(to_write)
+
+  def receive(msg= ('sent', ('control','rdma_write_sst', node, data_type, value, _, _), _)):
+    output("received message of data_type: ", data_type, " with value: ", value, " from node: ", node)
+
+  def receive(msg= ('sent', ('response', tid), fr)):
+    output("received message of data_type: rcvd with response value: ", tid, " from node: ", fr)
+
+  def receive(msg= ('sent', ('control','rdma_write_sst', _, 'num_installed', n_i, _, _), _)):
+    if len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'num_installed', _n_failed, _, _), _), from_=n))) == n_nodes-2:
+                                        ## if the message with number of installed changes equals number of nodes failed is received 
+                                        ##  from all the nodes in the new membership
+      nodes.remove(nodes[n_nodes-2])    ## remove the second last node from the nodes list as the node has failed 
+      nodes.remove(nodes[0])            ## remove the first node from the nodes list as the node has failed
+      n_nodes -= 2                      ## update the number of nodes in the system
+      output("nodes have been removed, system has undergone membership change with new nodes as: ", nodes)
+      --receive_pending_msgs            ## deliver pending messages received
+
+def main():
+  config(channel is fifo, clock is lamport, handling = 'all')
+  system_config = read_config("system_config.txt")
+
+  for conf in system_config:
+    num_requests = conf['num_requests'] ## number of requests to be served
+    num_nodes = conf['num_nodes']       ## number of nodes in the system
+    window_size = conf['window_size']   ## window_size, number of concurrent pending request per node
+    n_reps = conf['n_reps']             ## number of repetitions to calculate the metrics
+    test_failure = conf['test_failure']
+
+    c_reps = 0                          ## current count of the rep
+    throughputs = []                    ## array of throughput
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    fileName = os.path.join("statistics", timestamp + "_" + str(num_requests) + "_" + str(num_nodes) + "_" + str(window_size) + "_" + str(test_failure)[0] + ".txt")
+    f = open(fileName, "w")  ## create a new file
+    f.write("############################################\n" +
+            "num_requests: " + str(num_requests) + "\n" + "num_nodes: " + str(num_nodes) + "\n" +           
+            "window_size: " + str(window_size) + "\n" + "test_failure: " + str(test_failure) + "\n" +          
+            "n_reps: " + str(n_reps) + "\n" +
+            "############################################\n")
+    f.close()                                   ## close the file after creation   ### ? Can I not just create the file and not explicityly close
+
+    while c_reps < n_reps:
+      t1 = time.time()
+      nodes = new(NodeX, num=num_nodes)         ## create Node processes
+      client = new(LB)
+      checker = new (Checker)
+      for (rank, node) in enumerate(nodes):     ## setup Node processes
+        setup(node, (checker, nodes, rank, window_size, client))
+      setup(client, (client, list(nodes), num_requests, window_size, test_failure))
+      setup(checker, (list(nodes), client, fileName, num_requests, window_size, test_failure))
+      start(checker)
+      start(client)
+      start(nodes)                              ## start Node processes
+      await(received(('done'), from_ =checker)) ## wait to receive 'done' from the checker/sim process
+      throughputs.append((time.time() - t1)/num_requests)
+      print("--------- time:", time.time() - t1)
+      end(nodes)
+      end(client)
+      end(checker)
+      c_reps +=1
+
+    cpu_times = []
+    run_times = []
+    failures = 0
+    total_runs = 0
+    for metrics in listof(metric, received(("metrics", metric))):
+      for metric in metrics:
+        total_runs += 1
+        if metric.success:
+          cpu_times.append(metric.cpu_end_time - metric.cpu_start_time)
+          run_times.append(metric.run_end_time - metric.run_start_time)
+        else:
+          failures += 1
+
+    f = open(fileName, "a")  ## create a new file
+    f.write("AVG cpu_times: " + str(round(sum(cpu_times)/len(cpu_times), 5)) + "\n")
+    f.write("AVG run_times: " + str(round(sum(run_times)/len(run_times), 5)) + "\n")
+    f.write("AVG throughput: " + str(round(sum(throughputs)/len(throughputs), 5)) + "\n")
+    f.write("FAILURES: " + str(failures) + "\n")
+    f.close()
+
+def read_config(filename):
+  with open(filename) as f:
+    data = f.read()
+    print(data)
+    return(json.loads(data))
