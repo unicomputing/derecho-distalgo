@@ -1,0 +1,43 @@
+############################################
+num_requests: 10000
+num_nodes: 5
+window_size: 200
+test_failure: False
+n_reps: 1
+############################################
+************************************************
+node: 0 , received_num: 2024
+node: 1 , received_num: 2024
+node: 2 , received_num: 2024
+node: 3 , received_num: 2024
+node: 4 , received_num: 2024
+node: 0 , latest_received_index: 2024
+node: 1 , latest_received_index: 2024
+node: 2 , latest_received_index: 2024
+node: 3 , latest_received_index: 2024
+node: 4 , latest_received_index: 2024
+node: 0 , global_index: 10121
+node: 1 , global_index: 10121
+node: 2 , global_index: 10121
+node: 3 , global_index: 10121
+node: 4 , global_index: 10121
+node: 0 , latest_delivered_index: 10121
+node: 1 , latest_delivered_index: 10121
+node: 2 , latest_delivered_index: 10121
+node: 3 , latest_delivered_index: 10121
+node: 4 , latest_delivered_index: 10121
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+AVG cpu_times: 116.37751
+AVG run_times: 183.58753
+AVG throughput: 0.35461
+FAILURES: 0

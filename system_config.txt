@@ -1,3 +1,5 @@
 [
-        {"num_requests": 1000, "num_nodes": 5, "window_size": 50, "n_reps": 20, "test_failure" : false}
+        {"num_requests": 1000, "num_nodes": 5, "window_size": 50, "n_reps": 6, "test_failure" : false},
+        {"num_requests": 5000, "num_nodes": 5, "window_size": 100, "n_reps": 2, "test_failure" : false},
+        {"num_requests": 10000, "num_nodes": 5, "window_size": 200, "n_reps": 1, "test_failure" : false}
 ]

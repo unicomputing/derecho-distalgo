@@ -154,19 +154,19 @@ def main():
     num_nodes = conf['num_nodes']       ## number of nodes in the system
     window_size = conf['window_size']   ## window_size, number of concurrent pending request per node
     n_reps = conf['n_reps']             ## number of repetitions to calculate the metrics
-    test_failure = conf['test_failure']
+    test_failure = conf['test_failure'] ## boolean, if a failure needs to be injected in the system
 
     c_reps = 0                          ## current count of the rep
     throughputs = []                    ## array of throughput
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     fileName = os.path.join("statistics", timestamp + "_" + str(num_requests) + "_" + str(num_nodes) + "_" + str(window_size) + "_" + str(test_failure)[0] + ".txt")
-    f = open(fileName, "w")  ## create a new file
+    f = open(fileName, "w")             ## create a new file
     f.write("############################################\n" +
             "num_requests: " + str(num_requests) + "\n" + "num_nodes: " + str(num_nodes) + "\n" +           
             "window_size: " + str(window_size) + "\n" + "test_failure: " + str(test_failure) + "\n" +          
             "n_reps: " + str(n_reps) + "\n" +
             "############################################\n")
-    f.close()                                   ## close the file after creation   ### ? Can I not just create the file and not explicityly close
+    f.close()                                   ## close the file after creation
 
     while c_reps < n_reps:
       t1 = time.time()
@@ -177,8 +177,8 @@ def main():
         setup(node, (checker, nodes, rank, window_size, client))
       setup(client, (client, list(nodes), num_requests, window_size, test_failure))
       setup(checker, (list(nodes), client, fileName, num_requests, window_size, test_failure))
-      start(checker)
-      start(client)
+      start(checker)                            ## start Checker processes
+      start(client)                             ## start Client processes
       start(nodes)                              ## start Node processes
       await(received(('done'), from_ =checker)) ## wait to receive 'done' from the checker/sim process
       throughputs.append((time.time() - t1)/num_requests)
@@ -208,8 +208,9 @@ def main():
     f.write("FAILURES: " + str(failures) + "\n")
     f.close()
 
+## Reads config from a file pointed to by 'filename'
 def read_config(filename):
   with open(filename) as f:
     data = f.read()
     print(data)
-    return(json.loads(data))
+    return(json.loads(data))  ## return the json formatted string of the config
