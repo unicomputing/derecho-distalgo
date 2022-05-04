@@ -7,14 +7,24 @@ import time
 class NodeX(process, Node):
   def setup(checker, nodes, my_rank, window_size, sim):
     super().setup(nodes, my_rank, window_size, sim)
+    self.logs = []
         
   def send(m, to):
     super().send(('sent', m, to), to=checker)
     super().send(m, to)
 
+  def deliver_upcall(index, msg):
+    super().deliver_upcall(index, msg)
+    logs.append(index)
+    send(('logs_updated', logs, index), to=checker)
+
   def receive(msg=m, from_=fr):
     super().send(('rcvd', m, fr), to=checker)
 
+## LB process is used as load balancer
+## The process distributes the load in a round-robin manner among all processes.
+## It keeps a count of number of pending messages/requests, and ensures the number
+## does not exceed the total number of pending/queued requests in the system.
 class LB(process):
   def setup(checker, nodes, num_requests, window_size, test_failure): 
     self.metrics = {}                     ## stores the metrics per request id
@@ -69,10 +79,6 @@ class LB(process):
       num_pending_requests -= 1
       output("received response for tid: ", tid, " received_count: ", received_count, " num_pending_requests: ", num_pending_requests)
 
-## Checker process is used as load balancer
-## The process distributes the load in a round-robin manner among all processes.
-## It keeps a count of number of pending messages/requests, and ensures the number
-## does not exceed the total number of pending/queued requests in the system.
 class Checker(process):
   def setup(nodes, client, fileName, num_requests, window_size, test_failures): 
     self.metrics = {}                     ## stores the metrics per request id
@@ -85,55 +91,48 @@ class Checker(process):
   def run():
     await(len(setof(tid, received(('sent', ('response', tid), _)))) == num_requests)
     output("All responses have been received by the client")
-    time.sleep(10)
+    time.sleep(20)
     output("Woken up from sleep, delivering any pending messages")
     --receive_pending_msgs                                ## deliver pending messages received
-    output("delivered pending messages, writing statistics to the file")
-    f = open(fileName, "a")                               ## open file to write statistics of the run
-    f.write("************************************************\n")
-    check_safety(f)                                       ## check safety properties and write statistics to the file
-    f.write("************************************************\n")
-    f.close()                                             ## close the file 
-    output("done writing statistics to the file, sending done to parent")
-    send('done', to=parent())                             ## respond with done to the parent
-   
-  def check_safety(f_handle):
-    check_and_log_received_num_count(f_handle)
-    check_and_log_latest_received_index(f_handle)
-    check_and_log_global_index(f_handle)
-    check_and_log_latest_delivered_index(f_handle)
-    check_and_log_num_installed_count(f_handle)
-    check_and_log_num_committed_count(f_handle)
+    write_statistics()
+    isLogConsistent = check_logs_consistency()
+    f_handle = open(fileName, "a")
+    f_handle.write("logs across nodes are consistent: " + str(isLogConsistent) + "\n")
+    f_handle.close()
+    output("Safety checking done")
+    send('done', to=parent())                             ## respond with done to the parent   
 
-  def check_and_log_received_num_count(f_handle):
+  def check_logs_consistency(): ## The nodes must execute each operation in the same order. 
+                                ## The logs (if any) across nodes must be consistent.
+    max_ldi = set()
+    for n in range(n_nodes):
+      max_ldi.add(max(setof(val, received(('sent', ('control','rdma_write_sst', _n, "latest_delivered_index", val, _, _), _)))))
+      output("current max_ldi: ", max_ldi)
+    min_max_ldi = min(max_ldi)
+    logs = setof(logs, received(('logs_updated', logs, _min_max_ldi)))
+    output("collective logs is:", logs, " and len is: ", len(logs))
+    output("logs are: ", listof(logs, received(('logs_updated', logs, _min_max_ldi))))
+    return len(setof(logs, received(('logs_updated', logs, _min_max_ldi)))) == 1
+
+  def write_statistics():                                 ## write statistics to the file
+    f_handle = open(fileName, "a")                        ## open file to write statistics of the run
+    output("Writing statistics to the file")
     log_data("received_num", f_handle)
-
-  def check_and_log_latest_received_index(f_handle):
     log_data("latest_received_index", f_handle)
-
-  def check_and_log_global_index(f_handle):
     log_data("global_index", f_handle)
-
-  def check_and_log_latest_delivered_index(f_handle):
     log_data("latest_delivered_index", f_handle)
-
-  def check_and_log_num_installed_count(f_handle):
     log_data("num_installed", f_handle)
-
-  def check_and_log_num_committed_count(f_handle):
     log_data("num_committed", f_handle)
+    output("Done writing statistics to the file")
+    f_handle.close()                                      ## close the file
 
   def log_data(data_type, f_handle):
+    f_handle.write("************************************************\n")
+    f_handle.write("*********** " + data_type +" ***********\n")
     for n in range(n_nodes):
       val = max(setof(r, received(('sent', ('control','rdma_write_sst', _n, _data_type, r, _, _), _))) or [0])
-      to_write = "node: " + str(n) + " , " + data_type + ": " + str(val) + "\n"
+      to_write = "node: " + str(n) + " => " + str(val) + "\n"
       f_handle.write(to_write)
-
-  def receive(msg= ('sent', ('control','rdma_write_sst', node, data_type, value, _, _), _)):
-    output("received message of data_type: ", data_type, " with value: ", value, " from node: ", node)
-
-  def receive(msg= ('sent', ('response', tid), fr)):
-    output("received message of data_type: rcvd with response value: ", tid, " from node: ", fr)
 
   def receive(msg= ('sent', ('control','rdma_write_sst', _, 'num_installed', n_i, _, _), _)):
     if len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'num_installed', _n_failed, _, _), _), from_=n))) == n_nodes-2:
