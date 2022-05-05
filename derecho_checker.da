@@ -96,8 +96,10 @@ class Checker(process):
     --receive_pending_msgs                                ## deliver pending messages received
     write_statistics()
     isLogConsistent = check_logs_consistency()
+    isLogOrdered = check_logs_ordering()
     f_handle = open(fileName, "a")
     f_handle.write("logs across nodes are consistent: " + str(isLogConsistent) + "\n")
+    f_handle.write("logs across nodes are ordered: " + str(isLogOrdered) + "\n")
     f_handle.close()
     output("Safety checking done")
     send('done', to=parent())                             ## respond with done to the parent   
@@ -111,8 +113,20 @@ class Checker(process):
     min_max_ldi = min(max_ldi)
     logs = setof(logs, received(('logs_updated', logs, _min_max_ldi)))
     output("collective logs is:", logs, " and len is: ", len(logs))
-    output("logs are: ", listof(logs, received(('logs_updated', logs, _min_max_ldi))))
     return len(setof(logs, received(('logs_updated', logs, _min_max_ldi)))) == 1
+
+  def check_logs_ordering():    ## The nodes must execute each operation in the correct increasing order.
+                                ## The logs (if any) across nodes must be in montonically increasing order.
+    max_ldi = set()
+    for n in range(n_nodes):
+      max_ldi.add(max(setof(val, received(('sent', ('control','rdma_write_sst', _n, "latest_delivered_index", val, _, _), _)))))
+    min_max_ldi = min(max_ldi)
+    logs = list(list(tuple(setof(logs, received(('logs_updated', logs, _min_max_ldi)))))[0])
+    for i in range(len(logs)):
+      if i != logs[i]:
+        return False
+    output("Logs are ordered")
+    return True
 
   def write_statistics():                                 ## write statistics to the file
     f_handle = open(fileName, "a")                        ## open file to write statistics of the run
@@ -134,6 +148,7 @@ class Checker(process):
       to_write = "node: " + str(n) + " => " + str(val) + "\n"
       f_handle.write(to_write)
 
+  ## Distributes load in the face of failures
   def receive(msg= ('sent', ('control','rdma_write_sst', _, 'num_installed', n_i, _, _), _)):
     if len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'num_installed', _n_failed, _, _), _), from_=n))) == n_nodes-2:
                                         ## if the message with number of installed changes equals number of nodes failed is received 
