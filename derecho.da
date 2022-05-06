@@ -126,9 +126,9 @@ class Node(process):
     """min value of column col, at given index for col being a list, in the sst of this node"""
     try:
       if index is None:
-        return min({getattr(sst[row], col) for row in range(len(sst)) if getattr(sst[row], col) >= -1})
+        return min({getattr(sst[row], col) for row in range(len(sst))})
       else:
-        return min({getattr(sst[row], col)[index] for row in range(len(sst)) if getattr(sst[row], col)[index] >= -1})
+        return min({getattr(sst[row], col)[index] for row in range(len(sst))})
     except:
       return -1
 
