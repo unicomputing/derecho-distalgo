@@ -191,7 +191,8 @@ class Node(process):
   def run():
     while True:
       choice = random.choice(['recv', 'stable', 'suspect', 'elect', 'other'])
-      if await(choice == 'recv'): receive_msg()         # always
+      --receive_previous_messages
+      if choice == 'recv': receive_msg()         # always
       elif choice == 'stable':    stability_delivery()  # always
       elif choice == 'suspect':   suspect()             # always
       elif choice == 'elect':     leader_selection()    # always
@@ -268,6 +269,7 @@ class Node(process):
   # A.2.4 Receiving.
   ## receives a message, increments the current slot based on the window size.
   def receive_msg():                                       # always {
+    # output("in receive_msg()")
     for i in range(num_nodes):                             #   for i in 1 to n {
                                                            #    // the next message from node i will arrive in this slot
       slot = (sst[my_rank].received_num[i]+1)%window_size  #    slot = (sst[my_rank].received_num[i]+1)%window_size
@@ -325,6 +327,7 @@ class Node(process):
   # A.3.2 Stability and Delivery
   ## Calculates the next global index for message delivery 
   def stability_delivery():                   # always {
+    # output("in stability_delivery()")
     stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
                                               #   // |= K_me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
     to_delete = []
@@ -377,6 +380,7 @@ class Node(process):
                                                                        # // Wait until all non-suspected nodes comsider me to be the leader.
                                                                        # // This implies that the new leader takes action only after
                                                                        # // every healthy node has pushed final nReceived data to it.
+    # output("in leader_selection()")
     new_leader = find_new_leader(my_rank)                              # new_leader = find_new_leader(my_rank)
     if new_leader != curr_view.leader_rank and new_leader == my_rank:  # if(new_leader != curr_view.leader_rank && new_leader == my_rank)
       output("is the previous leader suspected?")
@@ -401,6 +405,7 @@ class Node(process):
 
   ## poll the suspected field in the SST and propagate the status across the systems, page 36
   def suspect():                                         # always {
+    # output("in suspect() function")
     for r in range(len(sst)):                            #   for(every row r and s) {
       for s in range(len(sst)):
         if sst[r].suspected[s] and not sst[my_rank].suspected[s]: #     if(sst[r].suspected[s] == true) { ### added a condition to check if sst[my_rank].suspected[s] is already true
@@ -409,7 +414,7 @@ class Node(process):
                                                          #     }}
     for s in range(len(sst)):                            #   for(s=0; s < num_members; ++s) {
                                                          #     // if s is newly suspected
-      if sst[my_rank].suspected[s] and (not curr_view.failed[s]):
+      if sst[my_rank].suspected[s]:  # and (not curr_view.failed[s])
                                                          #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
                                                          #       freeze(s)  ### ? No implementation found?
         report_failure(s)                                #       report_failure(s)
@@ -426,6 +431,7 @@ class Node(process):
         if curr_view.leader_rank == my_rank and list(nodes)[s] not in sst[my_rank].changes:
                                                          #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) { ### changes contains node id's not indices
           node_id = list(nodes)[s]
+          output("changes list updated with: ", node_id)
           # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed; ## not required in python for position
           changes = sst[my_rank].changes                               
           changes.append(node_id) 
@@ -439,6 +445,7 @@ class Node(process):
   # continuing A.4.2 Terminating old view and installing new view after wedging.
   def terminate_epoch():                                 # terminate_epoch() {
                                                          #   //calculate next view membership
+    output("in terminate_epoch()")
     --receive_pending_msg                                ## yeild to deliver all pending messages ### ? check if its needed
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)
@@ -633,11 +640,11 @@ def main():
         }
     }, handling = 'all')
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 20 ## number of requests from applications
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 100 ## number of requests from applications
   nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1         ## number of repetitions to calculate the metrics
   msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the message sent to the derecho system
-  window_size = 2                                               ## window_size, should be small
-  test_failure = True                                          ## set to True to test a failure scenario
+  window_size = 5                                               ## window_size, should be small
+  test_failure = False                                          ## set to True to test a failure scenario
 
   throughputs = []
   while nreps > 0:
