@@ -75,6 +75,7 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
     self.latest_delivered_index = -1     ## index of the last message successfully delivered by the current node to all nodes
     self.global_index = -1               ## global message index counter, used for total ordering of messages in the system
     self.slots = [Slot() for x in range(window_size)]  ## each Slot stores the new message recieved by the current node
+    self.freeze = False        ## boolean to denote if the row is frozen for any updates
 
 class View(): 
   """ ## A view holds the metadata of an epoch""" ## Understood from Fig.11 page 17
@@ -110,7 +111,10 @@ class Node(process):
   ## col: column name to be updated.
   ## val: value with which the column has to be updated.
   ## index: (optional) if the column is a list, pass the index in the list to be updated
-  def write_sst(row, col, val, index=None):  
+  def write_sst(row, col, val, index=None):
+    if sst[row].freeze == True:
+      # output("The update is not done because of frozen row: ", row, " node id: ", nodes[row])
+      return
     update_sst(row, col, val, index)         ## update the local SST
     message = ('rdma_write_sst', row, col, val, index, curr_view.epoch)  ## create an update message to broadcast the update to other nodes
     message_tagged = ('data' if message[2] == "slots" else 'control',) + message ## new for separating data and control
@@ -202,7 +206,7 @@ class Node(process):
       # A.4.2 Terminating old view and installing new view after wedging.
       elif (sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked    # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
             and curr_view.leader_rank != my_rank):                          
-          output("leader proposed a new change")                               #   // |= leader proposed a new change
+          output("leader: ", nodes[curr_view.leader_rank], " proposed a new change")                               #   // |= leader proposed a new change
                                                                                #   if(curr_view.leader_rank != my_rank) {
           leader_rank = curr_view.leader_rank  
           write_sst(my_rank, 'num_acked', sst[leader_rank].num_changes)        ## missing but is needed to terminate; acknowledge the changes
@@ -216,14 +220,14 @@ class Node(process):
                                                                                #   }}
       elif (curr_view.leader_rank == my_rank and                               # when (curr_view.leader_rank == my_rank and 
             min_not_failed('num_acked') > sst[my_rank].num_committed):         #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
-          output("commit_proposal_leader")                                     #   // |= K U\F ( acknowledged a new proposal )
+          output("commit_proposal_leader: ",  nodes[curr_view.leader_rank])                                     #   // |= K U\F ( acknowledged a new proposal )
           write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))     #   sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
                                                                                #   // |= commited acknowledged proposals
                                                                                # }
       elif sst[curr_view.leader_rank].num_committed > sst[my_rank].num_installed:
                                                    # when (sst[my_rank].num_committed[leader_rank] > sst[my_rank].num_installed[my_rank]) {
                                                    #   // |= leader committed a new membership change
-          output ('leader committed a new membership change')
+          output ("leader: ",  nodes[curr_view.leader_rank], " committed a new membership change")
           curr_view.wedged = True                  #   curr_view.wedge();
           write_sst(my_rank, 'wedged', True)       #   sst[my_rank].wedged = true;
           await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[∗].wedged) == true) {  ## todo: check liveness
@@ -350,6 +354,7 @@ class Node(process):
   def receive(msg=('failure', r)):              # every 1 millisecond {
                                                 #   post RDMA write with completion time to every SST Row that is not frozen
  						                                    #   if (no completion polled from row r) {
+      sst[r].freeze = True
       output("freeze", r)                       #     sst.freeze(r); ### ?? # no impl mentioned? Can we have a field checking if the sst is frozen or not         
       report_failure(r)                         #     report_failure(r); }}
 
@@ -412,9 +417,10 @@ class Node(process):
                                                          #     }}
     for s in range(len(sst)):                            #   for(s=0; s < num_members; ++s) {
                                                          #     // if s is newly suspected
-      if sst[my_rank].suspected[s]:  ### and (not curr_view.failed[s])  ### removed the 2nd conjunct to keep live when leader is killed
+      if sst[my_rank].suspected[s]:# and (not curr_view.failed[s]):   ### removed the 2nd conjunct to keep live when leader is killed
                                                          #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
-                                                         #       freeze(s)  ### ? No implementation found?
+        sst[s].freeze = True                             #       freeze(s)  ### ? No implementation found?
+        output("suspect(), freeze ", s)
         report_failure(s)                                #       report_failure(s)
                                                          #       // mark s as failed in the current view
         curr_view.failed[s] = True                       #       curr_view.failed[s] = true
@@ -524,6 +530,10 @@ class Node(process):
       output("Failure detected, no new data messages will be accepted")
       return
 
+    if sst[row].freeze == True:
+      output("The update is not done because of frozen row: ", row, " node id: ", nodes[row])
+      return
+  
     update_sst(row, col, val, index)      ## update the local SST
 
   ## Reset the system after a membership change in the new epoch
@@ -637,7 +647,7 @@ def main():
     }, handling = 'all')
 
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 100 ## number of requests from applications
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 40 ## number of requests from applications
   nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1         ## number of repetitions to calculate the metrics
   msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the message sent to the derecho system
   window_size = 5                                               ## window_size, should be small
