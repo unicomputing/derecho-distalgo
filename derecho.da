@@ -154,7 +154,7 @@ class Node(process):
 
   def get_max_gi():
     """max value of the global index of all the messages in the system,
-       max of (sst[my_rank].min_latest_received[n] ∗ |G| + n) over n in 1..|G|"""
+       max of (sst[my_rank].min_latest_received[n] * |G| + n) over n in 1..|G|"""
     if len(G) < 1: return 0
     return max((sst[my_rank].min_latest_received[n] * len(G) + n) for n in range(len(G)))
 
@@ -219,9 +219,9 @@ class Node(process):
                                                                                #     // |= acknowledged leader's proposal and wedged the current view
                                                                                #   }}
       elif (curr_view.leader_rank == my_rank and                               # when (curr_view.leader_rank == my_rank and 
-            min_not_failed('num_acked') > sst[my_rank].num_committed):         #       MinNotFailed(sst[∗].num_acked) > sst[my_rank].num_committed) {
+            min_not_failed('num_acked') > sst[my_rank].num_committed):         #       MinNotFailed(sst[*].num_acked) > sst[my_rank].num_committed) {
           output("commit_proposal_leader: ",  nodes[curr_view.leader_rank])                                     #   // |= K U\F ( acknowledged a new proposal )
-          write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))     #   sst[my_rank].num_committed = MinNotFailed(sst[∗].num_acked);
+          write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))     #   sst[my_rank].num_committed = MinNotFailed(sst[*].num_acked);
                                                                                #   // |= commited acknowledged proposals
                                                                                # }
       elif sst[curr_view.leader_rank].num_committed > sst[my_rank].num_installed:
@@ -230,7 +230,7 @@ class Node(process):
           output ("leader: ",  nodes[curr_view.leader_rank], " committed a new membership change")
           curr_view.wedged = True                  #   curr_view.wedge();
           write_sst(my_rank, 'wedged', True)       #   sst[my_rank].wedged = true;
-          await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[∗].wedged) == true) {  ## todo: check liveness
+          await(logical_and_not_failed('wedged'))  #   when (LogicalAndNotFailed(sst[*].wedged) == true) {  ## todo: check liveness
                                                    #     // |= K U\F (current view is wedged)
           terminate_epoch()                        #     terminate_epoch(); }}
 
@@ -311,13 +311,13 @@ class Node(process):
 
     msgs[gi(i, k)] = (i, k)                            #   msgs[hi(M(i,k))] = M(i,k);
     write_sst(my_rank, "latest_received_index", k, i)  #   sst[my_rank].latest_received_index[i] = k;    
-                                                       #   // calculate global index of the message in the global round−robin ordering
+                                                       #   // calculate global index of the message in the global round-robin ordering
     min_index_received, lagging_node_rank = get_min_idx_rec()
                                                        #   (min_index_received, lagging_node_rank) =
                                                        #       (min,argmin) i sst[my_rank].latest_received_index[i];  
     write_sst(my_rank, "global_index", (min_index_received + 1) * len(G) + lagging_node_rank - 1)
-                                                       #   sst[my_rank].global_index = (min_index_received + 1) ∗ |G| + lagging_node_rank − 1;
-                                                       #   // |= K_me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
+                                                       #   sst[my_rank].global_index = (min_index_received + 1) * |G| + lagging_node_rank - 1;
+                                                       #   // |= K_me (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index)
                                                        # }
 
   def deliver_upcall(index, msg):
@@ -331,8 +331,8 @@ class Node(process):
   ## Calculates the next global index for message delivery 
   def stability_delivery():                   # always {
     # output("in stability_delivery()")
-    stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[∗].global_index}
-                                              #   // |= K_me (∀p ∈ G : K p (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index))
+    stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[*].global_index}
+                                              #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
     to_delete = []
     for msg_index in sorted(msgs):                 #   for (msg : msgs) { ### msgs must be delivered in the global order ### Sorting the dictionary to process messages in a monotically increasing sequence
       if msg_index <= stable_msg_index:            #     if (msg.global_index <= min_stable_msg_index) {
@@ -345,7 +345,7 @@ class Node(process):
       write_sst(my_rank, "latest_delivered_index", stable_msg_index)
     # write_sst(my_rank, "latest_delivered_index", stable_msg_index)
                                               #   sst[my_rank].latest_delivered_index = stable_msg_index }
-                                              # // |= K_me (Delivered all messages ≤ sst[my_rank].latest_delivered_index)
+                                              # // |= K_me (Delivered all messages <= sst[my_rank].latest_delivered_index)
   
   # A.4 View Change Protocol
   # A.4.1 Failure Handling and Leader Proposing Changes for Next View.
@@ -362,7 +362,7 @@ class Node(process):
   def report_failure(r):                              # report_failure(r) {
     output("in report_failure function")              #   // local node suspects node that owns the row r
     write_sst(my_rank, 'suspected', True, r)          #   sst[my_rank].suspected[r] = true;
-    total_failed = Count('suspected', True)           #   total_failed = Count(sst[∗].suspected, true);
+    total_failed = Count('suspected', True)           #   total_failed = Count(sst[*].suspected, true);
     if total_failed >= (num_nodes + 1)/2:             #   if (total_failed >= (num_members + 1)/2) {
       output("ERROR: derecho_partitioning_exception") #     throw derecho_partitioning_exception;
       return                                          #   }
@@ -436,7 +436,7 @@ class Node(process):
                                                          #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) { ### changes contains node id's not indices
           node_id = nodes[s]
           output("changes list updated with: ", node_id)
-          # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed; ## not required in python for position
+          # next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed; ## not required in python for position
           changes = sst[my_rank].changes                               
           changes.append(node_id) 
           write_sst(my_rank, 'changes', changes)         #         sst[my_rank].changes[next_change_index] = id of node owning s
@@ -453,7 +453,7 @@ class Node(process):
     --receive_messages                                ## yeild to deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)
-                                                         #   committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
+                                                         #   committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed;
     next_view = View(num_nodes, curr_view.epoch+1)       ## creating a new view object
     next_view.members = curr_view.members                #   next_view.members = curr_view.members
     for change_index in range(committed_count):          #   for (change_index = 0; change_index < committed_count; change_index++) {
@@ -480,7 +480,7 @@ class Node(process):
   ## Cleans up and corrects the ragged edge due to failure, for the leader node
   def leader_ragged_edge_cleanup():                      # leader_ragged_edge_cleanup() {
     # output("leader_ragged_edge_cleanup ", self)
-    if logical_or("ragged_edge_computed"):               #   if (LogicalOr(sst[∗].ragged_edge_computed) == true) {
+    if logical_or("ragged_edge_computed"):               #   if (LogicalOr(sst[*].ragged_edge_computed) == true) {
       rank = min_with_val("ragged_edge_computed", True)  #     Let rank be s.t. sst[rank].ragged_edge_computed is true
                                                          #     // copy min_latest_received from the node that computed the ragged edge
       for n in range(len(G)):                            #     for (n = 0; n < |G|; ++n) {
@@ -490,7 +490,7 @@ class Node(process):
     else:                                                #   else {
       for n in range(len(G)):                            #     for (n = 0; n < |G|; ++n) {
         write_sst(my_rank, "min_latest_received", min_("latest_received_index", n), n)
-                                                         #       sst[my_rank].min_latest_received[n] = Min(sst[∗].latest_received_index[n]);
+                                                         #       sst[my_rank].min_latest_received[n] = Min(sst[*].latest_received_index[n]);
                                                          #       // |= K_me (sst[my_rank].min_latest_received[n] number of messages from n are safe for delivery) }
       write_sst(my_rank, "ragged_edge_computed", True)   #     sst[my_rank].ragged_edge_computed = true;
     deliver_in_order()                                   #   deliver_in_order(); }
@@ -509,7 +509,7 @@ class Node(process):
   def deliver_in_order():                                    # deliver_in_order() {
     # output("in deliver_in_order function, messages list: ", msgs)
     curr_global_index = sst[my_rank].latest_delivered_index  #   curr_global_index = sst[my_rank].latest_delivered_index;
-    max_global_index = get_max_gi()                          #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] ∗ |G| + n);
+    max_global_index = get_max_gi()                          #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] * |G| + n);
     for global_index in range(curr_global_index + 1, max_global_index + 1):
                                                              #   for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
       sender_index = global_index / len(G)                   #     sender_index = global_index / |G|;
@@ -627,7 +627,7 @@ class Sim(process):
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
-  config(channel is fifo, clock is lamport, visualize is {
+  config(channel is fifo, handling is all, clock is lamport, visualize is {
         # colors: override message and process colors, defaults to random (to fix random?)
         #         supports any valid CSS color value
         # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
@@ -644,7 +644,7 @@ def main():
 #           'rdma_write_sst': 'gray',
             'rdma_write_view': 'gray'
         }
-    }, handling = 'all')
+    })
 
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 40 ## number of requests from applications
