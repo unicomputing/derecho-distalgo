@@ -115,7 +115,7 @@ class Node(process):
     message = ('rdma_write_sst', row, col, val, index, curr_view.epoch)  ## create an update message to broadcast the update to others nodes
     message_tagged = ('data' if message[2] == "slots" else 'control',) + message ## new for separating data and control
     output("====", message_tagged)
-    send(message_tagged, to=(nodes-{self}))  ## send the update message to other nodes, so they update their local copies
+    send(message_tagged, to=others)  ## send the update message to other nodes, so they update their local copies
 
   ## The following aggregation functions are not defined in the paper.
   def min_not_failed(col):
@@ -186,6 +186,7 @@ class Node(process):
     for i, node in enumerate(nodes):
       self.curr_view.members[i] = node    ## initially updating the 'members' list of the view
     self.results = {}                     ## store the result/messages processed by the system
+    self.others = [n for n in nodes if n != self]
     output('initial nodes configuration: ', nodes)
 
   def run():
@@ -273,10 +274,10 @@ class Node(process):
     for i in range(num_nodes):                             #   for i in 1 to n {
                                                            #    // the next message from node i will arrive in this slot
       slot = (sst[my_rank].received_num[i]+1)%window_size  #    slot = (sst[my_rank].received_num[i]+1)%window_size
-      # output("node is: ", list(nodes)[i], "slot: ", slot, " received_num+1: ", sst[my_rank].received_num[i]+1, " index: ", sst[i].slots[slot].index)  ### ? Remove output
+      # output("node is: ", nodes[i], "slot: ", slot, " received_num+1: ", sst[my_rank].received_num[i]+1, " index: ", sst[i].slots[slot].index)  ### ? Remove output
       if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)//window_size+1:
                                                            #    if(sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/window_size+1) { 
-        output('new message available for node: ', list(nodes)[i], 'in slot:', slot, ', at index: ', sst[i].slots[slot].index, ' and received_num: ', (sst[my_rank].received_num[i]+1)) ### ? Remove output
+        output('new message available for node: ', nodes[i], 'in slot:', slot, ', at index: ', sst[i].slots[slot].index, ' and received_num: ', (sst[my_rank].received_num[i]+1)) ### ? Remove output
         write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
                                                            #      ++sst[my_rank].received_num[i];
         recv((i, sst[my_rank].received_num[i]))            #      recv(M(i, sst[my_rank].received_num[i])); }}}
@@ -428,9 +429,9 @@ class Node(process):
         write_sst(my_rank, 'wedged', True)               #       sst[my_rank].wedged = true
         # leader_selection()                             ## adding a call for leader selection, to maintain sequence of actions ### removed, as this is said to be always
 
-        if curr_view.leader_rank == my_rank and list(nodes)[s] not in sst[my_rank].changes:
+        if curr_view.leader_rank == my_rank and nodes[s] not in sst[my_rank].changes:
                                                          #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) { ### changes contains node id's not indices
-          node_id = list(nodes)[s]
+          node_id = nodes[s]
           output("changes list updated with: ", node_id)
           # next_change_index = sst[my_rank].num_changes − sst[my_rank].num_installed; ## not required in python for position
           changes = sst[my_rank].changes                               
@@ -531,7 +532,7 @@ class Node(process):
 
   ## Reset the system after a membership change in the new epoch
   def reset_system(view, old_sst_row, num_changes_installed):
-    self.nodes = set(view.members)        ## nodes in the system based on the members of the given view
+    self.nodes = view.members             ## nodes in the system based on the members of the given view
     self.num_nodes = len(nodes)           ## number of nodes in the system
     self.G = nodes                        ## nodes in the system, used to calculate global index
     self.sent_num = -1                    ## reset the sent_num in the new epoch
@@ -589,8 +590,8 @@ class Sim(process):
       ### Uncomment to use sim as an external failure detector
       ### External failure detector
       if test_failure and not failure_injected and tid == num_requests/2:  ## failing last node
-        send(('failure', 0), to= list(nodes)[1])  ## send index of the last node as a failed node to all nodes
-        send(('failure', len(nodes)-2), to= list(nodes)[1])
+        send(('failure', 0), to= nodes[1])  ## send index of the last node as a failed node to all nodes
+        send(('failure', len(nodes)-2), to= nodes[1])
         output("Sent failure message to first node")
         failure_injected = True
     output('done sending requests to the derecho system')
@@ -649,8 +650,9 @@ def main():
   throughputs = []
   while nreps > 0:
     t1 = time.time()
-    nodes = new(Node, num= num_nodes)     ## create Node processes
+    nodes = sorted(list(new(Node, num= num_nodes)))    ## create Node processes
     sim = new(Sim, (nodes, num_requests, test_failure, msg_size))  ## create and set up crash and client simulator process
+    output("type of nodes is: ", type(nodes))
     for (rank, node) in enumerate(nodes): ## setup Node processes
       setup(node, (nodes, rank, window_size, sim))
     start(nodes)                          ## start Node processes
