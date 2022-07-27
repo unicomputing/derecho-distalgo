@@ -191,7 +191,7 @@ class Node(process):
 
   def run():
     while True:
-      -- receive_messages
+      --receive_messages
 
       choice = random.choice(['recv', 'stable', 'suspect', 'elect', 'other'])
       if choice == 'recv':      receive_msg()         # always
@@ -386,7 +386,7 @@ class Node(process):
                                                                        #   // so as long as I continue to believe I will be leader
       while find_new_leader(my_rank) == my_rank:                       #   while(find_new_leader(my_rank) == my_rank) {
                                                                        #     // check if everyone else agrees I am leader
-        --receive_pending_messages                                     ## receive pending messages, necessary to receive updates to sst and thus updates to find_new_leader() 
+        --receive_messages                                     ## receive pending messages, necessary to receive updates to sst and thus updates to find_new_leader() 
         all_others_agree = True                                        ## bool all_others_agree = true ### moved the assignment inside the loop, if this ever becomes false, then this never becomes true and system is stuck
         for r in range(len(sst)):                                      #     for(r: SST.rows) {
           if not sst[my_rank].suspected[r]:                            #       if(sst[my_row].suspected[r] == false)
@@ -444,7 +444,7 @@ class Node(process):
   def terminate_epoch():                                 # terminate_epoch() {
                                                          #   //calculate next view membership
     output("in terminate_epoch()")
-    --receive_pending_msg                                ## yeild to deliver all pending messages
+    --receive_messages                                ## yeild to deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)
                                                          #   committed_count = sst[leader_rank].num_committed − sst[leader_rank].num_installed;
