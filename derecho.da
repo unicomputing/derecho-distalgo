@@ -191,13 +191,13 @@ class Node(process):
 
   def run():
     while True:
-      --receive_previous_messages
+      -- receive_messages
 
       choice = random.choice(['recv', 'stable', 'suspect', 'elect', 'other'])
-      if choice == 'recv':        receive_msg()         # always
-      elif choice == 'stable':    stability_delivery()  # always
-      elif choice == 'suspect':   suspect()             # always
-      elif choice == 'elect':     leader_selection()    # always
+      if choice == 'recv':      receive_msg()         # always
+      elif choice == 'stable':  stability_delivery()  # always
+      elif choice == 'suspect': suspect()             # always
+      elif choice == 'elect':   leader_selection()    # always
 
       # A.4.2 Terminating old view and installing new view after wedging.
       elif (sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked    # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
@@ -262,15 +262,15 @@ class Node(process):
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)     
     sent_num += 1                                 #   sent_num++; }
   
-  def receive(msg=('request', msg)):      ## receive request from application (Sim)
+  def receive(msg=('request', msg), from=p):      ## receive request from application (sim)
     if msg[0] in results:
-      output("Duplicate request received. Msg: ", msg, ". Sending result: ", results[msg[0]], " back to sim.")
-      send(('response', results[msg[0]]), to= sim)   ## Send the response back to Sim
+      output("Duplicate request received. Msg: ", msg, ". Sending result: ", results[msg[0]], " back.")
+      send(('response', results[msg[0]]), to= p)  ## send the corresponding response back
       return
     send_msg(msg)                         ## send the message in the next slot
 
   # A.2.4 Receiving.
-  ## receives a message, increments the current slot based on the window size.
+  ## receive a message and increment the current slot based on the window size
   def receive_msg():                                       # always {
     # output("in receive_msg()")
     for i in range(num_nodes):                             #   for i in 1 to n {
@@ -293,7 +293,7 @@ class Node(process):
 
   # A.3 Atomic Multicast Delivery in the Steady State
   # A.3.1 Receive.
-  ## Receives a message and adds it to the global message queue
+  ## add received message M to the global message queue
   def recv(M):                                         # on recv(M(i,k)) {
     output("in recv function, M: ", M)                 #   // |= K_me(Received M(i,k))
                                                        #   // store the message to deliver later
@@ -317,12 +317,11 @@ class Node(process):
                                                        #   // |= K_me (Received all messages M(i,k) s.t. дi(M(i,k)) ≤ sst[my_rank].global_index)
                                                        # }
 
-
   def deliver_upcall(index, msg):
     # output("in deliver_upcall function; index: ", index, " msg: ", msg)
     if sst[msg[0]].slots[msg[1]%window_size].buf is not None:
       results[sst[msg[0]].slots[msg[1]%window_size].buf[0]] = sst[msg[0]].slots[msg[1]%window_size].buf[0] ## No implementation provided in the pseudocode
-      send(('response', sst[msg[0]].slots[msg[1]%window_size].buf[0]), to= sim)   ## Send the response back to Sim
+      send(('response', sst[msg[0]].slots[msg[1]%window_size].buf[0]), to= sim)   ## Send the response back to sim
       output("response sent to the client/sim, index: ", index, "and response is ", sst[msg[0]].slots[msg[1]%window_size].buf[0])
 
   # A.3.2 Stability and Delivery
@@ -351,6 +350,7 @@ class Node(process):
   ## This simulates polling on SST for not receving a message for a time-period from one of the nodes
   def receive(msg=('failure', r)):              # every 1 millisecond {
                                                 #   post RDMA write with completion time to every SST Row that is not frozen
+ 						                                    #   if (no completion polled from row r) {
       output("freeze", r)                       #     sst.freeze(r); ### ?? # no impl mentioned? Can we have a field checking if the sst is frozen or not         
       report_failure(r)                         #     report_failure(r); }}
 
@@ -413,7 +413,7 @@ class Node(process):
                                                          #     }}
     for s in range(len(sst)):                            #   for(s=0; s < num_members; ++s) {
                                                          #     // if s is newly suspected
-      if sst[my_rank].suspected[s]:  # and (not curr_view.failed[s])
+      if sst[my_rank].suspected[s]:  ### and (not curr_view.failed[s])  ### removed the 2nd conjunct to keep live when leader is killed
                                                          #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
                                                          #       freeze(s)  ### ? No implementation found?
         report_failure(s)                                #       report_failure(s)
@@ -512,7 +512,7 @@ class Node(process):
       if (sender_index <= sst[my_rank].min_latest_received[sender_rank]):
                                                              #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
         output("delivering the message with global index ", global_index, " and message ", msgs[global_index])
-        deliver_upcall(global_index, msgs[global_index])                   #       deliver_upcall(msgs[global_index]); }}}
+        deliver_upcall(global_index, msgs[global_index])     #       deliver_upcall(msgs[global_index]); }}}
 
   ## Recieves message for an RDMA write from any node and updates the local SST
   def receive(msg = (tag, 'rdma_write_sst', row, col, val, index, epoch)):  ## added _ to filter out 'data' and 'control'
@@ -584,8 +584,8 @@ class Sim(process):
       output("sent request: ", tid, " to node: ", n)
       send(('request', (tid,os.urandom(msg_size))), to=n)
 
-      ### Uncomment to use sim as an external failure detector
-      ### External failure detector
+      # Uncomment to use sim as an external failure detector
+      # External failure detector
       if test_failure and not failure_injected and tid == num_requests/2:  ## failing last node
         send(('failure', 0), to= nodes[1])  ## send index of the last node as a failed node to all nodes
         send(('failure', len(nodes)-2), to= nodes[1])
@@ -618,9 +618,7 @@ class Sim(process):
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
-  ### uncomment to run without visualize
-  # config( channel is fifo, clock is Lamport, handling = 'all')
-  config(channel is fifo, clock is lamport, visualize is {
+  config(channel is fifo, handling = 'all', clock is lamport, visualize is {
         # colors: override message and process colors, defaults to random (to fix random?)
         #         supports any valid CSS color value
         # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
@@ -637,7 +635,7 @@ def main():
 #           'rdma_write_sst': 'gray',
             'rdma_write_view': 'gray'
         }
-    }, handling = 'all')
+    })
 
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 100 ## number of requests from applications
