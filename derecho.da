@@ -78,7 +78,7 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
     self.freeze = False        ## boolean to denote if the row is frozen for any updates
 
 class View(): 
-  """ ## A view holds the metadata of an epoch""" ## Understood from Fig.11 page 17
+  """ A view holds the metadata of an epoch""" ## Understood from Fig.11 page 17
   def __init__(self, num_nodes, epoch=0, leader_rank=0):
     self.leader_rank = leader_rank        ## rank of the leader in the current view
     self.failed = [False] * num_nodes     ## true against index of each node's rank if a process is deemed 'failed' in the view
@@ -117,7 +117,7 @@ class Node(process):
       return
     update_sst(row, col, val, index)         ## update the local SST
     message = ('rdma_write_sst', row, col, val, index, curr_view.epoch)  ## create an update message to broadcast the update to other nodes
-    message_tagged = ('data' if message[2] == "slots" else 'control',) + message ## new for separating data and control
+    message_tagged = ('data' if message[2] == "slots" else 'control',) + message  ## new for separating data and control
     output("====", message_tagged)
     send(message_tagged, to=others)  ## send the update message to other nodes, so they update their local copies
 
@@ -182,9 +182,9 @@ class Node(process):
                                           #     sst[i].slots[k].index = 0 }}
     self.num_nodes = len(nodes)           ## number of nodes in the system
     self.sst = [SSTRow(num_nodes, window_size) for _ in range(num_nodes)]   ## initialized the local SST for this node
-    self.sent_num = -1                    # sent_num = -1   ## helper variable to maintain a count of messages sent by this node
+    self.sent_num = -1                    # sent_num = -1   ## count of messages sent by this node
     self.curr_view = View(num_nodes)      ## initialize the local view object
-    self.G = nodes                        ## the set of nodes in the system
+    self.G = nodes                        ## set of nodes in the system
     self.msgs = {}                        ## dictionary, messages sent/received by this node, indexed by the global index of each message
     self.max_msg_size = 10                ## limit on the maximum message size for the system
     for i, node in enumerate(nodes):
@@ -205,9 +205,9 @@ class Node(process):
 
       # A.4.2 Terminating old view and installing new view after wedging.
       elif (sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked    # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
-            and curr_view.leader_rank != my_rank):                          
-          output("leader: ", nodes[curr_view.leader_rank], " proposed a new change")                               #   // |= leader proposed a new change
+            and curr_view.leader_rank != my_rank):                             #   // |= leader proposed a new change
                                                                                #   if(curr_view.leader_rank != my_rank) {
+          output("leader: ", nodes[curr_view.leader_rank], " proposed a new change")
           leader_rank = curr_view.leader_rank  
           write_sst(my_rank, 'num_acked', sst[leader_rank].num_changes)        ## missing but is needed to terminate; acknowledge the changes
           write_sst(my_rank, 'num_changes', sst[leader_rank].num_changes)      #     sst[my_rank].num_changes = sst[leader_rank].num_changes;
@@ -220,7 +220,8 @@ class Node(process):
                                                                                #   }}
       elif (curr_view.leader_rank == my_rank and                               # when (curr_view.leader_rank == my_rank and 
             min_not_failed('num_acked') > sst[my_rank].num_committed):         #       MinNotFailed(sst[*].num_acked) > sst[my_rank].num_committed) {
-          output("commit_proposal_leader: ",  nodes[curr_view.leader_rank])                                     #   // |= K U\F ( acknowledged a new proposal )
+                                                                               #   // |= K U\F ( acknowledged a new proposal )
+          output("commit_proposal_leader: ",  nodes[curr_view.leader_rank])
           write_sst(my_rank, 'num_committed', min_not_failed('num_acked'))     #   sst[my_rank].num_committed = MinNotFailed(sst[*].num_acked);
                                                                                #   // |= commited acknowledged proposals
                                                                                # }
@@ -253,7 +254,7 @@ class Node(process):
   ## increment the slot and send the message to other nodes
   def send_msg(msg):
     output("in send_msg function, msg: ", msg)  
-    if is_failure_detected():                     ## the system ceases to process any new request if there is a failure of a node in the system
+    if is_failure_detected():                     ## system ceases to process any new request if there is a failure of a node in the system
       output("Failure detected, new message will not be sent")
       return 
     is_buffer_available = get_buffer(0 if msg is None else len(msg)) ## check if slot buffer is available
@@ -288,11 +289,11 @@ class Node(process):
         recv((i, sst[my_rank].received_num[i]))            #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
   ## minimun index received by this node and the lagging node according to this Node's SST
-  def get_min_idx_rec():  # (min,argmin)i sst[my_rank].latest_received_index[i];   
-    min_ind = min(sst[my_rank].latest_received_index[rank] for rank in range(len(sst[my_rank].latest_received_index)))  ### removed the if condition (what if condition?), not sure why would this be required
-    lagging_node = min(rank for rank in range(len(sst[my_rank].latest_received_index)) if sst[my_rank].latest_received_index[rank] == min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
-    ### issue, imagine, n = 5, currently message has (0,0) and (1,1) but this function used to return last node as lagging, and thus, may cause some message to be left behind is (2,0) is missing and (3,0) is present, which then gets delivered
-    return min_ind,lagging_node
+  def get_min_idx_recv():  # (min,argmin)_i sst[my_rank].latest_received_index[i];   
+    min_ind = min(sst[my_rank].latest_received_index[i] for i in range(len(sst[my_rank].latest_received_index)) if i != my_rank)  ## pub back if i != my_rank
+    lagging_node = min(i for i in range(len(sst[my_rank].latest_received_index)) if sst[my_rank].latest_received_index[i] == min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
+    ### issue: suppose n = 5, currently message has (0,0) and (1,1) but this function used to return last node as lagging, and thus, may cause some message to be left behind is (2,0) is missing and (3,0) is present, which then gets delivered
+    return min_ind, lagging_node
 
   # A.3 Atomic Multicast Delivery in the Steady State
   # A.3.1 Receive.
@@ -312,7 +313,7 @@ class Node(process):
     msgs[gi(i, k)] = (i, k)                            #   msgs[hi(M(i,k))] = M(i,k);
     write_sst(my_rank, "latest_received_index", k, i)  #   sst[my_rank].latest_received_index[i] = k;    
                                                        #   // calculate global index of the message in the global round-robin ordering
-    min_index_received, lagging_node_rank = get_min_idx_rec()
+    min_index_received, lagging_node_rank = get_min_idx_recv()
                                                        #   (min_index_received, lagging_node_rank) =
                                                        #       (min,argmin) i sst[my_rank].latest_received_index[i];  
     write_sst(my_rank, "global_index", (min_index_received + 1) * len(G) + lagging_node_rank - 1)
@@ -352,7 +353,7 @@ class Node(process):
   ## This simulates polling on SST for not receving a message for a time-period from one of the nodes
   def receive(msg=('failure', r)):              # every 1 millisecond {
                                                 #   post RDMA write with completion time to every SST Row that is not frozen
-	                                              #   if (no completion polled from row r) {
+	                                        #   if (no completion polled from row r) {
       sst[r].freeze = True                      #     sst.freeze(r);  ### no impl mentioned; added a field for whether the sst row is frozen
       output("freeze", r)
       report_failure(r)                         #     report_failure(r); }}
@@ -434,7 +435,7 @@ class Node(process):
                                                          #       if(curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) {  ### changes contains node ids not indices
           node_id = nodes[s]
           output("changes list updated with: ", node_id)
-          # next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed;  ### not needed in python for position
+          # next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed  ### not needed in python for position
                                                          #         next_change_index = sst[my_rank].num_changes - sst[my_rank].num_installed;
           changes = sst[my_rank].changes
           changes.append(node_id)
@@ -449,7 +450,7 @@ class Node(process):
   def terminate_epoch():                                 # terminate_epoch() {
                                                          #   //calculate next view membership
     output("in terminate_epoch()")
-    --receive_messages                                ## yeild to deliver all pending messages
+    --receive_messages                                   ## yeild to deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - (sst[leader_rank].num_installed)
                                                          #   committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed;
@@ -619,7 +620,7 @@ class Sim(process):
       cur_metric.run_end_time = time.time()
       cur_metric.success = True
       received_count += 1
-      output("---- Received tid = ", tid, " from ", p, " with received_count: ", received_count)      ## Print the response received from the system
+      output("---- Received tid = ", tid, " from ", p, " with received_count: ", received_count)  ## Print the response received from the system
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
