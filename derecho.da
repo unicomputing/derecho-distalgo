@@ -238,7 +238,6 @@ class Node(process):
   # A.2.3 Sending. First the sending node reserves one of the slots:
   ## resolve the available slot before sending the message
   def get_buffer(msg_size):                       # char* get_buffer(msg_size) { ## returns true if slot is available
-    output("in get_buffer function, msg_size: ", msg_size)
     if msg_size > max_msg_size: return False      #   assert(msg_size <= max_msg_size);
                                                   #   // A Slot can be reused if the previos message in that slot was received by everyone
                                                   #   // Combine it with the FIFO ordering of messages
@@ -253,10 +252,9 @@ class Node(process):
   
   ## increment the slot and send the message to other nodes
   def send_msg(msg):
-    output("in send_msg function, msg: ", msg)  
     if is_failure_detected():                     ## system ceases to process any new request if there is a failure of a node in the system
       output("Failure detected, new message will not be sent")
-      return 
+      return
     is_buffer_available = get_buffer(0 if msg is None else len(msg)) ## check if slot buffer is available
     if not is_buffer_available:                   #   // After get_,buffer returns a non-null buffer, the application 
       return                                      #   // writes the message contents in the buffer and calls send
@@ -267,26 +265,25 @@ class Node(process):
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)     
     sent_num += 1                                 #   sent_num++; }
   
-  def receive(msg=('request', msg),from_=p):      ## receive request from application (sim)
-    if msg[0] in results:
+  def receive(msg=('request', msg),from_=client): ## receive request from a client; msg => (req_id, request_body, client_id)
+    output("request: ", msg, " received from client: ", client)
+    if msg[0] in results.keys():
       output("Duplicate request received. Msg: ", msg, ". Sending result: ", results[msg[0]], " back.")
-      send(('response', results[msg[0]]), to= p)  ## send the corresponding response back
+      send(('response', msg[0], results[msg[0]][1]), to=client)  ## send the corresponding response back
       return
-    send_msg(msg)                         ## send the message in the next slot
+    send_msg(msg)                                 ## send the message in the next slot
 
   # A.2.4 Receiving.
   ## receive a message and increment the current slot based on the window size
   def receive_msg():                                       # always {
-    # output("in receive_msg()")
     for i in range(num_nodes):                             #   for i in 1 to n {
                                                            #    // the next message from node i will arrive in this slot
       slot = (sst[my_rank].received_num[i]+1)%window_size  #    slot = (sst[my_rank].received_num[i]+1)%window_size
       if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)//window_size+1:
                                                            #    if(sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/window_size+1) { 
-        output('new message available for node: ', nodes[i], 'in slot:', slot, ', at index: ', sst[i].slots[slot].index, ' and received_num: ', (sst[my_rank].received_num[i]+1))
         write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
                                                            #      ++sst[my_rank].received_num[i];
-        recv((i, sst[my_rank].received_num[i]))            #      recv(M(i, sst[my_rank].received_num[i])); }}}
+        recv(M(i, sst[my_rank].received_num[i]), i,  sst[my_rank].received_num[i])#  recv(M(i, sst[my_rank].received_num[i])); }}}
 
   ## minimun index received by this node and the lagging node according to this Node's SST
   def get_min_idx_recv():  # (min,argmin)_i sst[my_rank].latest_received_index[i];   
@@ -298,19 +295,18 @@ class Node(process):
   # A.3 Atomic Multicast Delivery in the Steady State
   # A.3.1 Receive.
   ## add received message M to the global message queue
-  def recv(M):                                         # on recv(M(i,k)) {
-    output("in recv function, M: ", M)                 #   // |= K_me(Received M(i,k))
+  def recv(msg, i, k):                                 # on recv(M(i,k)) {
+    output("in recv function, (M): ", msg, i, k)       #   // |= K_me(Received M(i,k))
                                                        #   // store the message to deliver later
-    (i, k) = M
-    ### the following is added to avoid stalls, it sends a null message for the current sequence number
+    ### the following is added to avoid stalls, it sends a null(no-op) message for the current sequence number
     if my_rank < i and k > sent_num:                   ## if(my_rank < i && I have not sent M(my_rank, k))  ### changed, sent_num should be used to check the message number 
-      for x in range(k-sent_num):                      ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
+      for _ in range(k-sent_num):                      ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
         send_msg(None)                                 ##     send a null message 
     elif my_rank > i and k > sent_num+1:               ## else if(my_rank > i && I have not sent M(my_rank, k-1))
-      for x in range(k-sent_num-1):                    ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
+      for _ in range(k-sent_num-1):                    ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
         send_msg(None)                                 ##     send a null message
 
-    msgs[gi(i, k)] = (i, k)                            #   msgs[hi(M(i,k))] = M(i,k);
+    msgs[gi(i, k)] = msg                               #   msgs[hi(M(i,k))] = M(i,k);
     write_sst(my_rank, "latest_received_index", k, i)  #   sst[my_rank].latest_received_index[i] = k;    
                                                        #   // calculate global index of the message in the global round-robin ordering
     min_index_received, lagging_node_rank = get_min_idx_recv()
@@ -322,16 +318,17 @@ class Node(process):
                                                        # }
 
   def deliver_upcall(index, msg):
-    # output("in deliver_upcall function; index: ", index, " msg: ", msg)
-    if sst[msg[0]].slots[msg[1]%window_size].buf is not None:
-      results[sst[msg[0]].slots[msg[1]%window_size].buf[0]] = sst[msg[0]].slots[msg[1]%window_size].buf[0] ## No implementation provided in the pseudocode
-      send(('response', sst[msg[0]].slots[msg[1]%window_size].buf[0]), to= sim)   ## Send the response back to sim
-      output("response sent to the client/sim, index: ", index, "and response is ", sst[msg[0]].slots[msg[1]%window_size].buf[0])
+    if msg is None:                                   ## A null message represents no-op, return
+      return
+    if msg[0] not in results.keys():                  ## If the message has not been committed earlier
+      commit(index, msg[0], msg[1])                   ## commit the message
+    res = results[msg[0]][1]
+    send(('response', msg[0], res), to=msg[2])        ## Send the response back to the client
+    output("response sent to the client/sim, index: ", index, "and response is ", res)
 
   # A.3.2 Stability and Delivery
   ## calculate the next global index for message delivery 
   def stability_delivery():                   # always {
-    # output("in stability_delivery()")
     stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[*].global_index}
                                               #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
     to_delete = []
@@ -479,7 +476,6 @@ class Node(process):
 
   ## Cleans up and corrects the ragged edge due to failure, for the leader node
   def leader_ragged_edge_cleanup():                      # leader_ragged_edge_cleanup() {
-    # output("leader_ragged_edge_cleanup ", self)
     if logical_or("ragged_edge_computed"):               #   if (LogicalOr(sst[*].ragged_edge_computed) == true) {
       rank = min_with_val("ragged_edge_computed", True)  #     Let rank be s.t. sst[rank].ragged_edge_computed is true
                                                          #     // copy min_latest_received from the node that computed the ragged edge
@@ -497,7 +493,6 @@ class Node(process):
                                               
   ## Cleans up and corrects the ragged edge due to failure, for non-leader nodes
   def non_leader_ragged_edge_cleanup():              # non_leader_ragged_edge_cleanup() {
-    # output("in non_leader_ragged_edge_cleanup function")
     leader_rank = curr_view.leader_rank              #   // copy from the leader
     for n in range(len(G)):                          #   for (n = 0; n < |G|; ++n) {
       write_sst(my_rank, "min_latest_received", sst[leader_rank].min_latest_received[n], n)
@@ -507,7 +502,6 @@ class Node(process):
 
   ## Once the ragged edge has been cleaned up, the pending messages are delivered
   def deliver_in_order():                                    # deliver_in_order() {
-    # output("in deliver_in_order function, messages list: ", msgs)
     curr_global_index = sst[my_rank].latest_delivered_index  #   curr_global_index = sst[my_rank].latest_delivered_index;
     max_global_index = get_max_gi()                          #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] * |G| + n);
     for global_index in range(curr_global_index + 1, max_global_index + 1):
@@ -521,7 +515,6 @@ class Node(process):
 
   ## Recieves message for an RDMA write from any node and updates the local SST
   def receive(msg = (tag, 'rdma_write_sst', row, col, val, index, epoch)):  ## added _ to filter out 'data' and 'control'
-    # output("Received message tag is: ", tag, " and msg: " , ('rdma_write_sst', row, col, val, index, epoch))
     if epoch != curr_view.epoch:
       output('rdma_write_sst message received for different epoch, current: ', curr_view.epoch, ' and message: ', epoch)
       return
@@ -562,8 +555,14 @@ class Node(process):
     else:
       setattr(sst[row], col, val)             ## if it's not a list, just set the value to the new val passed
 
-## The rest is for simulation and testing
+  def M(i, k):
+    return sst[i].slots[k%window_size].buf
 
+  def commit(index, req_id, req):
+    results[req_id] = (index, str(req_id)+ str(req) + "_ex")
+    return results[req_id][1]
+
+## The rest is for simulation and testing
 class RequestMetrics:
   """object holding metrics for a request"""
   def __init__(self, cpu_start_time, run_start_time):
@@ -581,14 +580,14 @@ class Sim(process):
     self.received_count = 0
 
   def run():
-    output("Nodes:", nodes)
     failure_injected = False
 
-    for tid in range(num_requests):
+    for i in range(num_requests):
+      tid = str(i)+str(self)
       metrics[tid] = RequestMetrics(time.clock(), time.time())
       n = random.sample(nodes,1)
       output("sent request: ", tid, " to node: ", n)
-      send(('request', (tid,os.urandom(msg_size))), to=n)
+      send(('request', (tid, os.urandom(msg_size), self)), to=n)
 
       # Uncomment to use sim as an external failure detector
       # External failure detector
@@ -600,7 +599,7 @@ class Sim(process):
     output('done sending requests to the derecho system')
 
     while True:
-      if await (len(setof(tid, received(('response', tid)))) == num_requests):
+      if await (len(setof(tid, received(('response', tid, res)))) == num_requests):
         output("---- ---- all responded")
         send(('metrics', list(metrics.values())), to= parent())
         break 
@@ -613,7 +612,7 @@ class Sim(process):
             send(('request', (tid,os.urandom(msg_size))), to=n)
     send('done', to=parent())
    
-  def receive(msg= ('response', tid), from_= p):
+  def receive(msg= ('response', tid, res), from_= p):
     if not metrics[tid].success:
       cur_metric = metrics[tid]
       cur_metric.cpu_end_time = time.clock()
@@ -624,24 +623,25 @@ class Sim(process):
 
 ## take the number of nodes as input parameters during runtime, default
 def main():
-  config(channel is fifo, handling is all, clock is lamport, visualize is {
-        # colors: override message and process colors, defaults to random (to fix random?)
-        #         supports any valid CSS color value
-        # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
-        # examples: Transparent, Yellow, DarkRed, rgb(255, 255 ,0),
-        #           rgba(255, 255, 0, 0.1), hsl(210, 100%, 50%)
-        'colors': {
-            # processes
-            #'Sim': 'aquamarine',
-            # messages
-            'request': 'purple',
-            'response': 'blue',
-            'data': 'lime',
-            'control': 'red',
-#           'rdma_write_sst': 'gray',
-            'rdma_write_view': 'gray'
-        }
-    })
+#   config(channel is fifo, handling is all, clock is lamport, visualize is {
+#         # colors: override message and process colors, defaults to random (to fix random?)
+#         #         supports any valid CSS color value
+#         # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
+#         # examples: Transparent, Yellow, DarkRed, rgb(255, 255 ,0),
+#         #           rgba(255, 255, 0, 0.1), hsl(210, 100%, 50%)
+#         'colors': {
+#             # processes
+#             #'Sim': 'aquamarine',
+#             # messages
+#             'request': 'purple',
+#             'response': 'blue',
+#             'data': 'lime',
+#             'control': 'red',
+# #           'rdma_write_sst': 'gray',
+#             'rdma_write_view': 'gray'
+#         }
+#     })
+  config(channel is fifo, clock is lamport, handling = 'all')
 
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 40 ## number of requests from applications
