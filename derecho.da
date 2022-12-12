@@ -286,8 +286,8 @@ class Node(process):
         recv(M(i, sst[my_rank].received_num[i]), i,  sst[my_rank].received_num[i])#  recv(M(i, sst[my_rank].received_num[i])); }}}
 
   ## minimun index received by this node and the lagging node according to this Node's SST
-  def get_min_idx_recv():  # (min,argmin)_i sst[my_rank].latest_received_index[i];   
-    min_ind = min(sst[my_rank].latest_received_index[i] for i in range(len(sst[my_rank].latest_received_index)) if i != my_rank)  ## pub back if i != my_rank
+  def get_min_idx_recv():  # (min,argmin)_i sst[my_rank].latest_received_index[i];
+    min_ind = min(sst[my_rank].latest_received_index[i] for i in range(len(sst[my_rank].latest_received_index))) ### removed check that ignores the latest_received_index of self
     lagging_node = min(i for i in range(len(sst[my_rank].latest_received_index)) if sst[my_rank].latest_received_index[i] == min_ind)  ## node from minimum latest index received is the lagging node as per this node's reference
     ### issue: suppose n = 5, currently message has (0,0) and (1,1) but this function used to return last node as lagging, and thus, may cause some message to be left behind is (2,0) is missing and (3,0) is present, which then gets delivered
     return min_ind, lagging_node
@@ -311,7 +311,7 @@ class Node(process):
                                                        #   // calculate global index of the message in the global round-robin ordering
     min_index_received, lagging_node_rank = get_min_idx_recv()
                                                        #   (min_index_received, lagging_node_rank) =
-                                                       #       (min,argmin) i sst[my_rank].latest_received_index[i];  
+                                                       #       (min,argmin) i sst[my_rank].latest_received_index[i];
     write_sst(my_rank, "global_index", (min_index_received + 1) * len(G) + lagging_node_rank - 1)
                                                        #   sst[my_rank].global_index = (min_index_received + 1) * |G| + lagging_node_rank - 1;
                                                        #   // |= K_me (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index)

@@ -113,10 +113,11 @@ class Checker(process):
     is_uniform_integrity = uniform_integrity()
     is_agreement = agreement()
     is_validity = validity()
-    is_log_consistent = check_logs_consistency()
-    is_log_ordered = check_logs_ordering()
-    num_duplicate_requests_ordered = check_duplicate_requests()
-    num_noops = check_noops()
+    is_log_consistent = logs_consistency()
+    is_log_ordered = logs_ordering()
+    is_gi_count_tally = gi_count()
+    duplicate_requests_count = duplicate_requests_count_tally()
+    noops_count = noops_count_tally()
 
     f_handle = open(fileName, "a")
     f_handle.write("************************************************\n")
@@ -125,46 +126,48 @@ class Checker(process):
     f_handle.write("agreement: " + str(is_agreement) + "\n")
     f_handle.write("log_consistent: " + str(is_log_consistent) + "\n")
     f_handle.write("log_ordered: " + str(is_log_ordered) + "\n")
-    f_handle.write("num_duplicate_requests_ordered: " + str(num_duplicate_requests_ordered) + "\n") ### remove
-    f_handle.write("num_noops: " + str(num_noops) + "\n") ### remove
+    f_handle.write("gi_count_tally: " + str(is_gi_count_tally) + "\n") ### remove
+    f_handle.write("duplicate_requests_count: " + str(duplicate_requests_count) + "\n") ### remove
+    f_handle.write("noops_count: " + str(noops_count) + "\n") ### remove
     f_handle.write("************************************************\n")
     f_handle.close()
     send('done', to=parent())                             ## respond with done to the parent
 
   def uniform_integrity():
     output("in uniform_integrity()")
-    return not some(received(('commit', i1, v))) or \
-            not some(received(('commit', i2, _v)), 
+    return not some(received(('commit', i1, v), from_=n)) or \
+            not some(received(('commit', i2, _v), from_=_n), 
                     has= i2 > i1)
 
   def agreement():
     output("in agreement()")
-    return each(received(('commit', i, v1), from_=s), 
-                received(('commit', _i, v2), from_=r), 
+    return each(received(('commit', i, v1)), 
+                received(('commit', i, v2)), 
                 has= v1==v2)
 
   def validity():
     output("in validity()")
     return each(received(('commit', i, v)),
-                has= some(received(('rcvd', ('request', (_v, _, _)), _))))
+                has= some(n in nodes, received(('rcvd', ('request', (_v, _, _)), _), from_=n)))
 
   ## The nodes must execute each operation in the same order. 
   ## The logs (if any) across nodes must be consistent.
-  def check_logs_consistency():
-    output("in check_logs_consistency()")
-    return each(received(('deliver_upcall', i, v1, _), from_=s), 
-                received(('deliver_upcall', _i, v2, _), from_=r), 
+  ### will be redundant if deliver_upcall and commit mean the same
+  def logs_consistency():
+    output("in logs_consistency()")
+    return each(received(('deliver_upcall', i, v1, _)), 
+                received(('deliver_upcall', i, v2, _)), 
                 has= v1==v2)
 
   ### Optimise?
-  def check_logs_ordering():    ## The nodes must execute each operation in the correct increasing order.
+  def logs_ordering():    ## The nodes must execute each operation in the correct increasing order.
                                 ## The logs (if any) across nodes must be in montonically increasing order.
-    output("in check_logs_ordering()")
-    return each(received(('deliver_upcall', i1, _, t1), from_=s),
-              has= not some(received(('deliver_upcall', i2, _, t2), from_=_s), has=i2>i1 and t2<t1))
+    output("in logs_ordering()")
+    return each(received(('deliver_upcall', i1, _, t1), from_=n),
+                has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), has=i2>i1 and t2<t1))
 
-  def check_duplicate_requests():
-    output("in check_duplicate_requests")
+  def duplicate_requests_count_tally():
+    output("in duplicate_requests_count_tally()")
     count = 0
     unique_requests = setof(r, received(('deliver_upcall', _, (r, _, _), _)))    
     for r in unique_requests:
@@ -176,10 +179,21 @@ class Checker(process):
     return count
 
   ### remove?
-  def check_noops():
-    output("in check_noops()")
-    num_noops = len(setof(g, received(('noop_sent', g))))
-    return num_noops
+  def noops_count_tally():
+    output("in noops_count_tally()")
+    noops_count = len(setof(g, received(('noop_sent', g))))
+    return noops_count
+
+  ## check if the total number of ordered messages equals the sum of 
+  ## the number of requests, number of no-ops and number of duplicate messages
+  def gi_count():
+    output("in gi_count()")
+    total_messages_ordered = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _), _))) 
+                                or [-1]) + 1
+    duplicate_requests_count = duplicate_requests_count_tally()
+    noops_count = noops_count_tally()
+    tally_check = True if total_messages_ordered == (num_requests + duplicate_requests_count + noops_count) else False
+    return tally_check
 
   def write_statistics():                                 ## write statistics to the file
     f_handle = open(fileName, "a")                        ## open file to write statistics of the run
@@ -252,18 +266,16 @@ def main():
       start(clients)                            ## start Client processes
       start(nodes)                              ## start Node processes
       await(received(('start')))
-      output("received start from client")
       t1 = os.times()
-      output("T1 time is: ", t1)
       await(each(c in clients, has=some(received(('end', rep_id), from_=c), has=rep_id==c_reps)))
       t2 = os.times()
-      output("T2 time is: ", t2)
-      cputime =  (t2[0] + t2[1] + t2[2] + t2[3]) - (t1[0] + t1[1] + t1[2] + t1[3])
+      cpu_time =  (t2[0] + t2[1] + t2[2] + t2[3]) - (t1[0] + t1[1] + t1[2] + t1[3])
       el_time = t2[4] - t1[4]
-      output("current cputime is: ", cputime, " and elapsedtime is: ", el_time)
+      output("el_time: ", el_time)
+      output("cpu_time: ", cpu_time)
       await(received(('done'), from_ =checker)) ## wait to receive 'done' from the checker/sim process
       program_run_times.append(el_time)
-      program_cpu_times.append(cputime)
+      program_cpu_times.append(cpu_time)
       end(nodes)
       end(clients)
       end(checker)
@@ -282,12 +294,12 @@ def main():
 
     average_run_time = (round(sum(program_run_times)/len(program_run_times), 5))
     average_cpu_time = (round(sum(program_cpu_times)/len(program_cpu_times), 5))
-    average_throughput = (round(num_requests/average_run_time, 5))
+    average_throughput_inv = (round(average_run_time/num_requests, 5))
     f = open(fileName, "a")  ## create a new file
     f.write("AVG run_Time: " + str(average_run_time) + "\n")
     f.write("AVG average_cpu_time: " + str(average_cpu_time) + "\n")
     f.write("AVG latency: " + str(round(sum(run_times)/len(run_times), 5)) + "\n")
-    f.write("AVG throughput: " + str(average_throughput) + "\n")
+    f.write("AVG throughput: " + str(1/average_throughput_inv) + "\n")
     f.write("FAILURES: " + str(failures) + "\n")
     f.close()
 
