@@ -14,6 +14,9 @@ class NodeX(process, Node):
     super().send(('sent', m, to), to=checker)
     super().send(m, to)
 
+  def receive(msg=m, from_=fr):
+    super().send(('rcvd', m, fr), to=checker)
+
   def send_msg(msg):
     ### Remove?
     if not msg:
@@ -28,9 +31,6 @@ class NodeX(process, Node):
   def deliver_upcall(index, msg):
     super().deliver_upcall(index, msg)
     send(('deliver_upcall', index, msg, logical_clock()), to=checker)
-
-  def receive(msg=m, from_=fr):
-    super().send(('rcvd', m, fr), to=checker)
 
 ## LB process is used as load balancer
 ## The process distributes the load in a round-robin manner among all processes.
@@ -105,30 +105,21 @@ class Checker(process):
   def run():
     await(len(setof(tid, received(('sent', ('response', tid, res), _)))) == num_requests)
     output("All responses have been received from the clients")
-    await(timeout(20))      
+    await(timeout(30))      
     output("Woken up from sleep, delivering any pending messages")
     --receive_pending_msgs                                ## deliver pending messages received
     write_statistics()
 
-    is_uniform_integrity = uniform_integrity()
-    is_agreement = agreement()
-    is_validity = validity()
-    is_log_consistent = logs_consistency()
-    is_log_ordered = logs_ordering()
-    is_gi_count_tally = gi_count()
-    duplicate_requests_count = duplicate_requests_count_tally()
-    noops_count = noops_count_tally()
-
     f_handle = open(fileName, "a")
     f_handle.write("************************************************\n")
-    f_handle.write("uniform_integrity: " + str(is_uniform_integrity) + "\n")
-    f_handle.write("validity: " + str(is_validity) + "\n")
-    f_handle.write("agreement: " + str(is_agreement) + "\n")
-    f_handle.write("log_consistent: " + str(is_log_consistent) + "\n")
-    f_handle.write("log_ordered: " + str(is_log_ordered) + "\n")
-    f_handle.write("gi_count_tally: " + str(is_gi_count_tally) + "\n") ### remove
-    f_handle.write("duplicate_requests_count: " + str(duplicate_requests_count) + "\n") ### remove
-    f_handle.write("noops_count: " + str(noops_count) + "\n") ### remove
+    f_handle.write("uniform_integrity: " + str(uniform_integrity()) + "\n")
+    f_handle.write("validity: " + str(validity()) + "\n")
+    f_handle.write("agreement: " + str(agreement()) + "\n")
+    f_handle.write("log_consistent: " + str(logs_consistency()) + "\n")
+    f_handle.write("log_ordered: " + str(logs_ordering()) + "\n")
+    f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n") ### remove
+    f_handle.write("duplicate_requests_count: " + str(duplicate_requests_count()) + "\n") ### remove
+    f_handle.write("noops_count: " + str(noops_count()) + "\n") ### remove
     f_handle.write("************************************************\n")
     f_handle.close()
     send('done', to=parent())                             ## respond with done to the parent
@@ -167,30 +158,26 @@ class Checker(process):
                 has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), has=i2>i1 and t2<t1))
 
   ## Return the number of duplicate requests ordered 
-  def duplicate_requests_count_tally():
-    output("in duplicate_requests_count_tally()")  
-    check_count = len(setof(i, received(('deliver_upcall', i, (r, _, _), _)),
+  def duplicate_requests_count():
+    output("in duplicate_requests_count()")  
+    return len(setof(i, received(('deliver_upcall', i, (r, _, _), _)),
                             r is not None and 
                             r in setof(r, received(('deliver_upcall', _, (r, _, _), _))))) - num_requests
-    return check_count
 
   ### remove?
   ## Return the number of no-ops ordered
-  def noops_count_tally():
-    output("in noops_count_tally()")
-    noops_count = len(setof(g, received(('noop_sent', g))))
-    return noops_count
+  def noops_count():
+    output("in noops_count()")
+    return len(setof(g, received(('noop_sent', g))))
 
   ## check if the total number of ordered messages equals the sum of 
   ## the number of requests, number of no-ops and number of duplicate messages
-  def gi_count():
-    output("in gi_count()")
+  def gi_count_tally():
+    output("in gi_count_tally()")
     total_messages_ordered = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _), _))) 
                                 or [-1]) + 1
-    duplicate_requests_count = duplicate_requests_count_tally()
-    noops_count = noops_count_tally()
-    tally_check = True if total_messages_ordered == (num_requests + duplicate_requests_count + noops_count) else False
-    return tally_check
+
+    return total_messages_ordered == (num_requests + duplicate_requests_count() + noops_count())
 
   def write_statistics():                                 ## write statistics to the file
     f_handle = open(fileName, "a")                        ## open file to write statistics of the run
@@ -292,7 +279,7 @@ def main():
     average_run_time = (round(sum(program_run_times)/len(program_run_times), 5))
     average_cpu_time = (round(sum(program_cpu_times)/len(program_cpu_times), 5))
     average_throughput_inv = (round(average_run_time/num_requests, 5))
-    f = open(fileName, "a")  ## create a new file
+    f = open(fileName, "a")
     f.write("AVG run_Time: " + str(average_run_time) + "\n")
     f.write("AVG average_cpu_time: " + str(average_cpu_time) + "\n")
     f.write("AVG latency: " + str(round(sum(run_times)/len(run_times), 5)) + "\n")
