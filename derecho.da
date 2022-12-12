@@ -62,13 +62,13 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
     ## each field is a column name.
     ## if field is a LIST, it stores a value for each other node based on the index of the node.
     self.suspected = [False] * num_nodes ## LIST; for each node, whether the node is suspected to be crashed
-    self.num_committed = 0     ## number of changes committed by the current node, as suggested by the Leader
-    self.num_acked = 0         ## number of changes acknowleged by the current node, as suggested by the Leader
+    self.num_committed = 0     ## number of node changes committed by the current node, as suggested by the Leader
+    self.num_acked = 0         ## number of node changes acknowleged by the current node, as suggested by the Leader
     self.received_num = [-1] * num_nodes ## LIST; for each node, number of messages received by the current node
     self.wedged = False        ## whether the current node has wedged its SST
     self.changes = []          ## list of node ids of crashed/new nodes
-    self.num_changes = 0       ## number of changes, i.e., length of self.changes
-    self.num_installed = 0     ## number of `changes` applied or installed to the current node's SST
+    self.num_changes = 0       ## number of node changes, i.e., length of self.changes
+    self.num_installed = 0     ## number of node changes applied/installed to the current node's SST
     self.min_latest_received = [-1] * num_nodes    ## LIST; for each node, minimum index of message received from the node
     self.latest_received_index = [-1] * num_nodes  ## LIST; for each node, index of latest message received from the node
     self.ragged_edge_computed = True     ## whether the ragged trim is finalized for this node after a failure 
@@ -185,7 +185,7 @@ class Node(process):
     self.sent_num = -1                    # sent_num = -1   ## count of messages sent by this node
     self.curr_view = View(num_nodes)      ## initialize the local view object
     self.G = nodes                        ## set of nodes in the system
-    self.msgs = {}                        ## dictionary, messages sent/received by this node, indexed by the global index of each message
+    self.msgs = {}                        ## dictionary of request msgs received by this node but not yet called deliver_upcall on, indexed by global index of the msg
     self.max_msg_size = 10                ## limit on the maximum message size for the system
     for i, node in enumerate(nodes):
       self.curr_view.members[i] = node    ## initially updating the 'members' list of the view
@@ -317,33 +317,30 @@ class Node(process):
                                                        #   // |= K_me (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index)
                                                        # }
 
-  def deliver_upcall(index, msg):
-    if msg is None:                                   ## A null message represents no-op, return
-      return
-    if msg[0] not in results.keys():                  ## If the message has not been committed earlier
-      commit(index, msg[0], msg[1])                   ## commit the message
-    res = results[msg[0]][1]
-    send(('response', msg[0], res), to=msg[2])        ## Send the response back to the client
-    output("response sent to the client/sim, index: ", index, "and response is ", res)
+  def deliver_upcall(global_index, req):           ## execute decided global index for request msg
+    (id, cmd) = req   ## to copy from paxos code
+    if req is None: return                         ## if request is a no-op, return
+    if id not in exceuted.keys():                  ## if not executed already
+      execute(global_index, req)                   ## execute request at global_index
+      send(('response', req), to=client)         ## send response to client
+      output("response sent to the client/sim, index: ", index, "and response is ", res)
 
   # A.3.2 Stability and Delivery
   ## calculate the next global index for message delivery 
-  def stability_delivery():                   # always {
-    stable_msg_index = min_("global_index")   #   stable_msg_index = Min{sst[*].global_index}
-                                              #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
-    to_delete = []
-    for msg_index in sorted(msgs):                 #   for (msg : msgs) {  ### msgs must be delivered in the global order: sort the dictionary to process messages in an increasing sequence
+  def stability_delivery():                        # always {
+    stable_msg_index = min_("global_index")        #   stable_msg_index = Min{sst[*].global_index}
+                                                   #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
+    sorted_msgs = sorted(msg)
+    for msg_index in sorted_msgs_indices:          #   for (msg : msgs) {  ### msgs must be delivered in the global order: sort the dictionary to process messages in an increasing sequence
       if msg_index <= stable_msg_index:            #     if (msg.global_index <= min_stable_msg_index) {
         deliver_upcall(msg_index, msgs[msg_index]) #       deliver_upcall(msg);
-        to_delete.append(msg_index)                ##  store the messages that needs to be deleted, to delete later 
-    for d in to_delete:
-      del msgs[d]                             #   msgs.remove(msg.global_index); }}  ### msg is a tuple, here d is a tuple
-    if to_delete:                             ## if there are new changes, only then update latest_delivered_index. Since this function gets called always
+        del msgs[d]                                #       msgs.remove(msg.global_index); }}  ### msg is a tuple, here d is a tuple
+    if min(sorted_msg) < stable_msg_index:         ## if there are new reqs to execute, update latest_delivered_index, not always as this function is run always
                                               ## it reduces the number of control messages sent in the system
       write_sst(my_rank, "latest_delivered_index", stable_msg_index)
-                                              #   sst[my_rank].latest_delivered_index = stable_msg_index }
-                                              # // |= K_me (Delivered all messages <= sst[my_rank].latest_delivered_index)
-  
+                                                   #   sst[my_rank].latest_delivered_index = stable_msg_index }
+                                                   # // |= K_me (Delivered all messages <= sst[my_rank].latest_delivered_index)
+
   # A.4 View Change Protocol
   # A.4.1 Failure Handling and Leader Proposing Changes for Next View.
   ## Receives a failure trigger.
@@ -558,9 +555,9 @@ class Node(process):
   def M(i, k):
     return sst[i].slots[k%window_size].buf
 
-  def commit(index, req_id, req):
-    results[req_id] = (index, str(req_id)+ str(req) + "_ex")
-    return results[req_id][1]
+  def execute(global_index, req):             ## record the global_inded assigned to request id in results
+    (id, cmd) = req
+    results[id] = (global_index, req)         ### req was string before so certainly not used other than printing
 
 ## The rest is for simulation and testing
 class RequestMetrics:
