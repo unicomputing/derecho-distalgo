@@ -62,7 +62,7 @@ class LB(process):
           send(('start'), to=parent())
         n = -1
         for i in range(num_requests):
-          await(timeout(round((random.random())/50, 2)))
+          await(timeout(round((random.random())/50, 2)))  ### room for intelligence during this computation
           --receive_pending_msgs
           tid = str(i)+str(self)
           if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
@@ -103,9 +103,13 @@ class Checker(process):
     self.n_failed = 2                     ## number of nodes to be failed
 
   def run():
-    await(len(setof(tid, received(('sent', ('response', tid, res), _)))) == num_requests)
+    
+    await(len(setof(tid, received(('sent', ('response', tid, res), _)))) == num_requests) ## until everyone sends a response back
     output("All responses have been received from the clients")
-    await(timeout(30))      
+    await(each(n in nodes, tid in setof(tid, received(('sent', ('response', tid, res), _))), 
+              has= some(received(('sent', ('response', _tid, _), _), from_=_n))))
+    output("All nodes responded to the clients")
+    await(timeout(30))                                    ### ? Replace with better await condition?
     output("Woken up from sleep, delivering any pending messages")
     --receive_pending_msgs                                ## deliver pending messages received
     write_statistics()
@@ -117,45 +121,67 @@ class Checker(process):
     f_handle.write("agreement: " + str(agreement()) + "\n")
     f_handle.write("log_consistent: " + str(logs_consistency()) + "\n")
     f_handle.write("log_ordered: " + str(logs_ordering()) + "\n")
-    f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n") ### remove
-    f_handle.write("duplicate_requests_count: " + str(duplicate_requests_count()) + "\n") ### remove
-    f_handle.write("noops_count: " + str(noops_count()) + "\n") ### remove
+    f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n")
+    f_handle.write("ldi_count_tally: " + str(ldi_count_tally()) + "\n")
+    f_handle.write("duplicate_requests_count: " + str(duplicate_requests_count()) + "\n")
+    f_handle.write("noops_count: " + str(noops_count()) + "\n")
     f_handle.write("************************************************\n")
     f_handle.close()
     send('done', to=parent())                             ## respond with done to the parent
 
   def uniform_integrity():
     output("in uniform_integrity()")
-    return not some(received(('commit', i1, v), from_=n)) or \
-            not some(received(('commit', i2, _v), from_=_n), 
-                    has= i2 > i1)
+    t1 = perf_counter()
+    is_uniform_integrity = not some(received(('commit', i1, v), from_=n)) or \
+                            not some(received(('commit', i2, _v), from_=_n), 
+                                      has= i2 > i1)
+    t2 = perf_counter()
+    output("time elapsed in computing uniform_integrity: ", t2-t1)
+    return is_uniform_integrity
 
   def agreement():
     output("in agreement()")
-    return each(received(('commit', i, v1)), 
-                received(('commit', i, v2)), 
-                has= v1==v2)
+    t1 = perf_counter()
+    is_agreement = each(received(('commit', i, v1)), 
+                      received(('commit', i, v2)), 
+                      has= v1==v2)
+    t2 = perf_counter()
+    output("time elapsed in computing agreement: ", t2-t1)
+    return is_agreement
 
   def validity():
     output("in validity()")
-    return each(received(('commit', i, v)),
-                has= some(n in nodes, received(('rcvd', ('request', (_v, _, _)), _), from_=n)))
+    t1 = perf_counter()
+    is_validity = each(received(('commit', i, v)),
+                      has= some(n in nodes, received(('rcvd', ('request', (_v, _, _)), _), from_=n)))
+    t2 = perf_counter()
+    output("time elapsed in computing validity: ", t2-t1)
+    return is_validity
 
   ## The nodes must execute each operation in the same order. 
   ## The logs (if any) across nodes must be consistent.
   ### will be redundant if deliver_upcall and commit mean the same
   def logs_consistency():
     output("in logs_consistency()")
-    return each(received(('deliver_upcall', i, v1, _)), 
-                received(('deliver_upcall', i, v2, _)), 
-                has= v1==v2)
+    t1 = perf_counter()
+    is_logs_consistency = each(received(('deliver_upcall', i, v1, _)), 
+                              received(('deliver_upcall', i, v2, _)), 
+                              has= v1==v2)
+    t2 = perf_counter()
+    output("time elapsed in computing logs_consistency: ", t2-t1)
+    return is_logs_consistency
 
   ### Optimise?
   def logs_ordering():    ## The nodes must execute each operation in the correct increasing order.
                                 ## The logs (if any) across nodes must be in montonically increasing order.
     output("in logs_ordering()")
-    return each(received(('deliver_upcall', i1, _, t1), from_=n),
-                has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), has=i2>i1 and t2<t1))
+    t1 = perf_counter()
+    is_logs_ordering =  each(received(('deliver_upcall', i1, _, t1), from_=n),
+                            has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), 
+                                          has=i2>i1 and t2<t1))
+    t2 = perf_counter()
+    output("time elapsed in computing logs_ordering: ", t2-t1)
+    return is_logs_ordering
 
   ## Return the number of duplicate requests ordered 
   def duplicate_requests_count():
@@ -172,12 +198,29 @@ class Checker(process):
 
   ## check if the total number of ordered messages equals the sum of 
   ## the number of requests, number of no-ops and number of duplicate messages
-  def gi_count_tally():
+  def gi_count_tally():             ### Helped uncover issue in get_min_idx_recv()
     output("in gi_count_tally()")
-    total_messages_ordered = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _), _))) 
-                                or [-1]) + 1
+    max_gi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _), _))) 
+                                or [-1])
+    ## check if max gi across nodes is consistent
+    if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'global_index', _max_gi, _, _), _), from_=n))) == n_nodes:
+      output("max gi inconsistent across nodes")
+      return False
 
-    return total_messages_ordered == (num_requests + duplicate_requests_count() + noops_count())
+    return (max_gi+1) == (num_requests + duplicate_requests_count() + noops_count())
+
+  def ldi_count_tally():
+    if not gi_count_tally():
+      return False
+
+    max_ldi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', r, _, _), _))) 
+                                or [-1])
+    ## check if max ldi across nodes is consistent
+    if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', _max_ldi, _, _), _), from_=n))) == n_nodes:
+      output("max ldi inconsistent across nodes")
+      return False
+
+    return (max_ldi+1) == (num_requests + duplicate_requests_count() + noops_count())
 
   def write_statistics():                                 ## write statistics to the file
     f_handle = open(fileName, "a")                        ## open file to write statistics of the run
