@@ -166,19 +166,16 @@ class Checker(process):
     return each(received(('deliver_upcall', i1, _, t1), from_=n),
                 has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), has=i2>i1 and t2<t1))
 
+  ## Return the number of duplicate requests ordered 
   def duplicate_requests_count_tally():
-    output("in duplicate_requests_count_tally()")
-    count = 0
-    unique_requests = setof(r, received(('deliver_upcall', _, (r, _, _), _)))    
-    for r in unique_requests:
-      if r is None:
-        continue
-      repeated = len(setof(i, received(('deliver_upcall', i, (_r, _, _), _))))
-      if repeated > 1:
-        count += repeated - 1
-    return count
+    output("in duplicate_requests_count_tally()")  
+    check_count = len(setof(i, received(('deliver_upcall', i, (r, _, _), _)),
+                            r is not None and 
+                            r in setof(r, received(('deliver_upcall', _, (r, _, _), _))))) - num_requests
+    return check_count
 
   ### remove?
+  ## Return the number of no-ops ordered
   def noops_count_tally():
     output("in noops_count_tally()")
     noops_count = len(setof(g, received(('noop_sent', g))))
