@@ -317,25 +317,26 @@ class Node(process):
                                                        #   // |= K_me (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index)
                                                        # }
 
-  def deliver_upcall(global_index, req):           ## execute decided global index for request msg
-    (id, cmd) = req   ## to copy from paxos code
-    if req is None: return                         ## if request is a no-op, return
-    if id not in exceuted.keys():                  ## if not executed already
-      execute(global_index, req)                   ## execute request at global_index
-      send(('response', req), to=client)         ## send response to client
-      output("response sent to the client/sim, index: ", index, "and response is ", res)
+  def deliver_upcall(global_index, req):            ## execute decided global index for request msg
+    output("in deliver_upcall, req is: ", req)    
+    if req is None: return                          ## if request is a no-op, return
+    (id, _) = req                                   ## request is a tuple of id and operation
+    if id not in results.keys():                    ## if request has not been executed previously
+      execute(global_index, req)                    ## execute request at global_index
+      send(('response', id, results[id][1]), to=id[1])         ## send response to client
+      output("response sent to the client/sim, index: ", global_index, "and response is ", results[id][1])
 
   # A.3.2 Stability and Delivery
   ## calculate the next global index for message delivery 
   def stability_delivery():                        # always {
     stable_msg_index = min_("global_index")        #   stable_msg_index = Min{sst[*].global_index}
                                                    #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
-    sorted_msgs = sorted(msg)
-    for msg_index in sorted_msgs_indices:          #   for (msg : msgs) {  ### msgs must be delivered in the global order: sort the dictionary to process messages in an increasing sequence
+    sorted_keys = sorted(msgs.keys())
+    for msg_index in sorted_keys:                  #   for (msg : msgs) {  ### msgs must be delivered in the global order: sort the dictionary to process messages in an increasing sequence
       if msg_index <= stable_msg_index:            #     if (msg.global_index <= min_stable_msg_index) {
         deliver_upcall(msg_index, msgs[msg_index]) #       deliver_upcall(msg);
-        del msgs[d]                                #       msgs.remove(msg.global_index); }}  ### msg is a tuple, here d is a tuple
-    if min(sorted_msg) < stable_msg_index:         ## if there are new reqs to execute, update latest_delivered_index, not always as this function is run always
+        del msgs[msg_index]                        #       msgs.remove(msg.global_index); }}  ### msg is a tuple, here d is a tuple
+    if sorted_keys and min(sorted_keys) <= stable_msg_index:         ## if there are new reqs to execute, update latest_delivered_index, not always as this function is run always
                                               ## it reduces the number of control messages sent in the system
       write_sst(my_rank, "latest_delivered_index", stable_msg_index)
                                                    #   sst[my_rank].latest_delivered_index = stable_msg_index }
@@ -539,9 +540,9 @@ class Node(process):
     write_sst(my_rank, 'num_acked', old_sst_row.num_acked) ## copy over the number of acknowledged changes to the new view's sst
 
   def is_failure_detected():
-    for r in range(len(sst)):                     ##  for(r: SST.rows) {
-      if sst[my_rank].suspected[r]:               ##    if sst[my_rank].suspected[r]    
-        return True                               ## // stop sending any new message
+    for r in range(len(sst)):                 ##  for(r: SST.rows) {
+      if sst[my_rank].suspected[r]:           ##    if sst[my_rank].suspected[r]    
+        return True                           ## // stop sending any new message
     return False
 
   def update_sst(row, col, val, index=None):  ## update the local SST
@@ -552,11 +553,11 @@ class Node(process):
     else:
       setattr(sst[row], col, val)             ## if it's not a list, just set the value to the new val passed
 
-  def M(i, k):
+  def M(i, k):                                ## Returns the message from the slot buffer based on slot decided by i, and k
     return sst[i].slots[k%window_size].buf
 
   def execute(global_index, req):             ## record the global_inded assigned to request id in results
-    (id, cmd) = req
+    (id, _) = req                             ## request is a tuple of id and operation
     results[id] = (global_index, req)         ### req was string before so certainly not used other than printing
 
 ## The rest is for simulation and testing
@@ -580,11 +581,11 @@ class Sim(process):
     failure_injected = False
 
     for i in range(num_requests):
-      tid = str(i)+str(self)
+      tid = (i, self)
       metrics[tid] = RequestMetrics(time.clock(), time.time())
       n = random.sample(nodes,1)
       output("sent request: ", tid, " to node: ", n)
-      send(('request', (tid, os.urandom(msg_size), self)), to=n)
+      send(('request', (tid, os.urandom(msg_size))), to=n)
 
       # Uncomment to use sim as an external failure detector
       # External failure detector
@@ -603,6 +604,7 @@ class Sim(process):
       elif timeout(5):
         output("---- ---- timeout!!!")
         for tid in range(num_requests):
+          tid = (i, self)
           if not metrics[tid].success:
             n = random.sample(nodes,1)
             output('sending message ', tid, ' to node: ', n)

@@ -18,15 +18,14 @@ class NodeX(process, Node):
     super().send(('rcvd', m, fr), to=checker)
 
   def send_msg(msg):
-    ### Remove?
     if not msg:
       g_index = (sent_num+1)*len(nodes) + my_rank
       send(('noop_sent', g_index), to=checker)
     super().send_msg(msg)
 
-  def commit(index, req_id, req):
-    super().commit(index, req_id, req)
-    send(('commit', index, req_id), to=checker)
+  def execute(index, req):
+    super().execute(index, req)
+    send(('execute', index, req[0]), to=checker)
 
   def deliver_upcall(index, msg):
     super().deliver_upcall(index, msg)
@@ -62,9 +61,9 @@ class LB(process):
           send(('start'), to=parent())
         n = -1
         for i in range(num_requests):
+          tid = (i, self)
           await(timeout(round((random.random())/50, 2)))  ### room for intelligence during this computation
           --receive_pending_msgs
-          tid = str(i)+str(self)
           if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
             continue
           # await (num_pending_requests < max_pending_requests)     ## await for the number of pending requests to drop below the maximum request serving capacity of the system
@@ -75,7 +74,7 @@ class LB(process):
           # n = (n+1)%n_nodes                               ## in round-robin manner, select the next server number to send the next request to
           n = random.randint(0, len(nodes)-1)
           output('sending request ', tid, ' to node: ', n)
-          send(('request', (tid, os.urandom(msg_size), self)), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
+          send(('request', (tid, os.urandom(msg_size))), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
           num_pending_requests += 1                                 ## increment the number of pending requests(non served requests) sent to the system
           
           if test_failure and not failure_injected and tid == num_requests/2:   ## external failure detector, sending failure detection for first and the second last node
@@ -105,7 +104,6 @@ class Checker(process):
     self.n_noops = 0                      ## number of noops, initially 0     
 
   def run():
-    
     await(len(setof(tid, received(('sent', ('response', tid, res), _)))) == num_requests) ## until everyone sends a response back
     output("All responses have been received from the clients")
     await(each(n in nodes, tid in setof(tid, received(('sent', ('response', tid, res), _))), 
@@ -136,8 +134,8 @@ class Checker(process):
   def uniform_integrity():
     output("in uniform_integrity()")
     start_time = perf_counter()
-    is_uniform_integrity = not some(received(('commit', i1, v), from_=n)) or \
-                            not some(received(('commit', i2, _v), from_=_n), 
+    is_uniform_integrity = not some(received(('execute', i1, v), from_=n)) or \
+                            not some(received(('execute', i2, _v), from_=_n), 
                                       has= i2 > i1)
     end_time = perf_counter()
     output("time elapsed in computing uniform_integrity: ", end_time - start_time)
@@ -146,8 +144,8 @@ class Checker(process):
   def agreement():
     output("in agreement()")
     start_time = perf_counter()
-    is_agreement = each(received(('commit', i, v1)), 
-                      received(('commit', i, v2)), 
+    is_agreement = each(received(('execute', i, v1)), 
+                      received(('execute', i, v2)), 
                       has= v1==v2)
     end_time = perf_counter()
     output("time elapsed in computing agreement: ", end_time - start_time)
@@ -156,15 +154,15 @@ class Checker(process):
   def validity():
     output("in validity()")
     start_time = perf_counter()
-    is_validity = each(received(('commit', i, v)),
-                      has= some(n in nodes, received(('rcvd', ('request', (_v, _, _)), _), from_=n)))
+    is_validity = each(received(('execute', i, tid)),
+                      has= some(n in nodes, received(('rcvd', ('request', (_tid, _)), _), from_=n)))
     end_time = perf_counter()
     output("time elapsed in computing validity: ", end_time - start_time)
     return is_validity
 
   ## The nodes must execute each operation in the same order. 
   ## The logs (if any) across nodes must be consistent.
-  ### will be redundant if deliver_upcall and commit mean the same
+  ### will be redundant if deliver_upcall and execute mean the same
   def logs_consistency():
     output("in logs_consistency()")
     start_time = perf_counter()
@@ -191,9 +189,9 @@ class Checker(process):
   def duplicate_requests_count():
     output("in duplicate_requests_count()")
     start_time = perf_counter()
-    count = len(setof(i, received(('deliver_upcall', i, (r, _, _), _)),
+    count = len(setof(i, received(('deliver_upcall', i, (r, _), _)),
                             r is not None and 
-                            r in setof(r, received(('deliver_upcall', _, (r, _, _), _))))) - num_requests
+                            r in setof(r, received(('deliver_upcall', _, (r, _), _))))) - num_requests
     end_time = perf_counter()
     output("time elapsed in computing duplicate_requests_count: ", end_time - start_time)
     return count
