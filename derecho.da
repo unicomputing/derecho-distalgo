@@ -173,7 +173,7 @@ class Node(process):
     return (k) * len(G) + i               # gi(M(i, k)) = i + |G| * k
 
   # A.2.2 Initialization.
-  def setup(nodes, my_rank, window_size, sim):
+  def setup(nodes, my_rank, window_size, state):
                                           # for i in 1 to n {
                                           #   for j in 1 to n {
                                           #     sst[i].received_num[j] = -1; }
@@ -265,11 +265,12 @@ class Node(process):
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)     
     sent_num += 1                                 #   sent_num++; }
   
-  def receive(msg=('request', msg),from_=client): ## receive request from a client; msg => (req_id, request_body, client_id)
+  def receive(msg=('request', msg),from_=client): ## receive request from a client; msg => (client_id, req_id, cmd)
+    (client_id, req_id, _) = msg
     output("request: ", msg, " received from client: ", client)
-    if msg[0] in results.keys():
-      output("Duplicate request received. Msg: ", msg, ". Sending result: ", results[msg[0]], " back.")
-      send(('response', msg[0], results[msg[0]][1]), to=client)  ## send the corresponding response back
+    if some(sent(('response', _req_id, res), to=_client_id)):
+      output("Duplicate request received. Msg: ", msg, ". Sending result: ", res, " back.")
+      send(('response', req_id, res), to=client_id)  ## send the corresponding response back
       return
     send_msg(msg)                                 ## send the message in the next slot
 
@@ -318,13 +319,13 @@ class Node(process):
                                                        # }
 
   def deliver_upcall(global_index, req):            ## execute decided global index for request msg
-    output("in deliver_upcall, req is: ", req)    
+    output("in deliver_upcall(), gi: ", global_index, " and req: ", req)    
     if req is None: return                          ## if request is a no-op, return
-    (id, _) = req                                   ## request is a tuple of id and operation
-    if id not in results.keys():                    ## if request has not been executed previously
-      execute(global_index, req)                    ## execute request at global_index
-      send(('response', id, results[id][1]), to=id[1])         ## send response to client
-      output("response sent to the client/sim, index: ", global_index, "and response is ", results[id][1])
+    (client_id, req_id, _) = req                    ## request is a triple of client_id, req_id and cmd
+    if not some(sent(('response', _req_id, _), to=_client_id)):  ## if request has not been executed previously
+      state, res = execute(global_index, req, state)## execute request at global_index
+      send(('response', req_id, res), to=client_id) ## send response to client
+      output("response sent to the client/sim, index: ", global_index, "and response is ", res)
 
   # A.3.2 Stability and Delivery
   ## calculate the next global index for message delivery 
@@ -556,9 +557,9 @@ class Node(process):
   def M(i, k):                                ## Returns the message from the slot buffer based on slot decided by i, and k
     return sst[i].slots[k%window_size].buf
 
-  def execute(global_index, req):             ## record the global_inded assigned to request id in results
-    (id, _) = req                             ## request is a tuple of id and operation
-    results[id] = (global_index, req)         ### req was string before so certainly not used other than printing
+  def execute(global_index, req, state):      ## execute and apply the request to the state
+    (_, req_id, _) = req                      ## request is a tuple of id and operation
+    return (state+[(global_index, req)], req_id)
 
 ## The rest is for simulation and testing
 class RequestMetrics:
@@ -580,12 +581,11 @@ class Sim(process):
   def run():
     failure_injected = False
 
-    for i in range(num_requests):
-      tid = (i, self)
+    for tid in range(num_requests):
       metrics[tid] = RequestMetrics(time.clock(), time.time())
       n = random.sample(nodes,1)
       output("sent request: ", tid, " to node: ", n)
-      send(('request', (tid, os.urandom(msg_size))), to=n)
+      send(('request', (self, tid, os.urandom(msg_size))), to=n)
 
       # Uncomment to use sim as an external failure detector
       # External failure detector
@@ -604,11 +604,10 @@ class Sim(process):
       elif timeout(5):
         output("---- ---- timeout!!!")
         for tid in range(num_requests):
-          tid = (i, self)
           if not metrics[tid].success:
             n = random.sample(nodes,1)
             output('sending message ', tid, ' to node: ', n)
-            send(('request', (tid,os.urandom(msg_size))), to=n)
+            send(('request', (self, tid, os.urandom(msg_size))), to=n)
     send('done', to=parent())
    
   def receive(msg= ('response', tid, res), from_= p):
@@ -655,8 +654,9 @@ def main():
     nodes = sorted(list(new(Node, num= num_nodes)))    ## create Node processes
     sim = new(Sim, (nodes, num_requests, test_failure, msg_size))  ## create and set up crash and client simulator process
     output("type of nodes is: ", type(nodes))
+    state = []
     for (rank, node) in enumerate(nodes): ## setup Node processes
-      setup(node, (nodes, rank, window_size, sim))
+      setup(node, (nodes, rank, window_size, state))
     start(nodes)                          ## start Node processes
     start(sim)                            ## start the sim process
     await(received(('done'), from_ =sim)) ## wait to receive 'done' from the sim process

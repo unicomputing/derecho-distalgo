@@ -7,8 +7,8 @@ import random
 from time import perf_counter
 
 class NodeX(process, Node):
-  def setup(checker, nodes, my_rank, window_size, sim):
-    super().setup(nodes, my_rank, window_size, sim)
+  def setup(checker, nodes, my_rank, window_size, state):
+    super().setup(nodes, my_rank, window_size, state)
 
   def send(m, to):
     super().send(('sent', m, to), to=checker)
@@ -18,18 +18,21 @@ class NodeX(process, Node):
     super().send(('rcvd', m, fr), to=checker)
 
   def send_msg(msg):
-    if not msg:
-      g_index = (sent_num+1)*len(nodes) + my_rank
-      send(('noop_sent', g_index), to=checker)
     super().send_msg(msg)
-
-  def execute(index, req):
-    super().execute(index, req)
-    send(('execute', index, req[0]), to=checker)
+    send(('send_msg', msg), to=checker)
+    
+  def execute(index, req, state):
+    res = super().execute(index, req, state)
+    (c_id, req_id, _) = req
+    send(('execute', index, (c_id, req_id)), to=checker)
+    return res
 
   def deliver_upcall(index, msg):
     super().deliver_upcall(index, msg)
     send(('deliver_upcall', index, msg, logical_clock()), to=checker)
+    # if(index == 50 and my_rank == 1):
+    #   send(('deliver_upcall', index+1, msg, logical_clock()), to=checker)
+    #   send(('deliver_upcall', index+1, req_id, logical_clock()), to=checker)
 
 ## LB process is used as load balancer
 ## The process distributes the load in a round-robin manner among all processes.
@@ -60,8 +63,7 @@ class LB(process):
         if received_count == 0:         ### Review
           send(('start'), to=parent())
         n = -1
-        for i in range(num_requests):
-          tid = (i, self)
+        for tid in range(num_requests):
           await(timeout(round((random.random())/50, 2)))  ### room for intelligence during this computation
           --receive_pending_msgs
           if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
@@ -74,7 +76,7 @@ class LB(process):
           # n = (n+1)%n_nodes                               ## in round-robin manner, select the next server number to send the next request to
           n = random.randint(0, len(nodes)-1)
           output('sending request ', tid, ' to node: ', n)
-          send(('request', (tid, os.urandom(msg_size))), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
+          send(('request', (self, tid, os.urandom(msg_size))), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
           num_pending_requests += 1                                 ## increment the number of pending requests(non served requests) sent to the system
           
           if test_failure and not failure_injected and tid == num_requests/2:   ## external failure detector, sending failure detection for first and the second last node
@@ -101,17 +103,18 @@ class Checker(process):
     self.n_nodes = len(nodes)             ## number of active nodes in the system, initially equal to the number of initial nodes
     self.n_failed = 2                     ## number of nodes to be failed
     self.n_duplicate_requests = 0         ## number of duplicate requests, initially 0
-    self.n_noops = 0                      ## number of noops, initially 0     
+    self.n_noops = 0                      ## number of noops, initially 0
 
   def run():
-    await(len(setof(tid, received(('sent', ('response', tid, res), _)))) == num_requests) ## until everyone sends a response back
+    ## Await until every node sends a response back for every client request
+    await(len(setof((c, tid, n), received(('sent', ('response', tid, _), c), from_=n))) == num_requests * n_nodes)
     output("All responses have been received from the clients")
-    await(each(n in nodes, tid in setof(tid, received(('sent', ('response', tid, res), _))), 
-              has= some(received(('sent', ('response', _tid, _), _), from_=_n))))
+    ## Await until all the nodes have updated their latest_delivered_index corresponding to the last response
+    max_execute_gi = max(setof(idx, received(('execute', idx, _))))
+    output("max_id in checker: ", max_execute_gi)
+    await(len(setof(n, received(('sent', ('control','rdma_write_sst', n, 'latest_delivered_index', ldi, _, _), _)), ldi>=max_execute_gi)) == n_nodes) ### optimise?
+    await(timeout(20))
     output("All nodes responded to the clients")
-    await(timeout(30))                                    ### ? Replace with better await condition?
-    output("Woken up from sleep, delivering any pending messages")
-    --receive_pending_msgs                                ## deliver pending messages received
     write_statistics()
 
     n_duplicate_requests = duplicate_requests_count()
@@ -129,53 +132,83 @@ class Checker(process):
     f_handle.write("noops_count: " + str(n_noops) + "\n")
     f_handle.write("************************************************\n")
     f_handle.close()
-    send('done', to=parent())                             ## respond with done to the parent
+    send('done', to=parent())             ## respond with done to the parent
 
+  # If a server executes an update on seq no i, then the server does not 
+  # execute the update on any other seq no i' > i.
   def uniform_integrity():
     output("in uniform_integrity()")
     start_time = perf_counter()
-    is_uniform_integrity = not some(received(('execute', i1, v), from_=n)) or \
-                            not some(received(('execute', i2, _v), from_=_n), 
-                                      has= i2 > i1)
+    is_uniform_integrity = each(received(('execute', i1, v), from_=n),
+                                has= not some(received(('execute', i2, _v), from_=_n), 
+                                      has= i2 > i1))
     end_time = perf_counter()
+    output("result of is_uniform_integrity: ", is_uniform_integrity)
     output("time elapsed in computing uniform_integrity: ", end_time - start_time)
+
+    ### The following is a little slower than the above
+    # start_time = perf_counter()
+    # is_uniform_integrity = each(received(('execute', _, v), from_=n),
+    #                             has= len(setof(i, received(('execute', i, _v), from_=_n))) == 1)
+    # end_time = perf_counter()
+    # output("result of is_uniform_integrity2: ", is_uniform_integrity)
+    # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
+
+    ### The following is incorrect, because it does not consider all combinations
+    # start_time = perf_counter()
+    # is_uniform_integrity = not some(received(('execute', i1, v), from_=n)) or \
+    #                         not some(received(('execute', i2, _v), from_=_n), 
+    #                                   has= i2 > i1)
+    # end_time = perf_counter()
+    # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
     return is_uniform_integrity
 
+  # If two servers execute the ith update then these updates are identical.
   def agreement():
     output("in agreement()")
     start_time = perf_counter()
-    is_agreement = each(received(('execute', i, v1)), 
-                      received(('execute', i, v2)), 
-                      has= v1==v2)
+    is_agreement = each(i in setof(i, received(('execute', i, _))),
+                      has= len(setof(v, received(('execute', _i, v)))) == 1)
     end_time = perf_counter()
     output("time elapsed in computing agreement: ", end_time - start_time)
+
+    ### The following is about an order of magnitude slower than above
+    # start_time = perf_counter()
+    # is_agreement = each(received(('execute', i, v1)), 
+    #                   received(('execute', i, v2)), 
+    #                   has= v1==v2)
+    # end_time = perf_counter()
+    # output("time elapsed in computing agreement: ", end_time - start_time)
     return is_agreement
 
+  # Only an update that was introduced by a client and subsequently 
+  # initiated by a server may be executed.
   def validity():
     output("in validity()")
     start_time = perf_counter()
-    is_validity = each(received(('execute', i, tid)),
-                      has= some(n in nodes, received(('rcvd', ('request', (_tid, _)), _), from_=n)))
+    is_validity = each(received(('execute', i, (c_id, r_id))),
+                      has= some(n in nodes, 
+                                received(('rcvd', ('request', (_c_id, _r_id, _)), _), from_=_n), 
+                                received(('send_msg', (_c_id, _r_id, _)), from_=_n)))
     end_time = perf_counter()
     output("time elapsed in computing validity: ", end_time - start_time)
     return is_validity
 
-  ## The nodes must execute each operation in the same order. 
-  ## The logs (if any) across nodes must be consistent.
+  ## The order of messages delivered across nodes must be consistent
   ### will be redundant if deliver_upcall and execute mean the same
   def logs_consistency():
     output("in logs_consistency()")
     start_time = perf_counter()
-    is_logs_consistency = each(received(('deliver_upcall', i, v1, _)), 
-                              received(('deliver_upcall', i, v2, _)), 
-                              has= v1==v2)
+    is_logs_consistency = each(i in setof(i, received(('deliver_upcall', i, _, _))),
+                              has= len(setof(n, received(('deliver_upcall', _i, _, _), from_=n))) == n_nodes and 
+                                    len(setof(r, received(('deliver_upcall', _i, r, _)))) == 1)
     end_time = perf_counter()
     output("time elapsed in computing logs_consistency: ", end_time - start_time)
     return is_logs_consistency
 
-  ### Optimise?
-  def logs_ordering():    ## The nodes must execute each operation in the correct increasing order.
-                                ## The logs (if any) across nodes must be in montonically increasing order.
+  ## If a node executes an i1 update at time t1 then it did not 
+  ## execute i2, i2>i1 update at time t2<t1
+  def logs_ordering():
     output("in logs_ordering()")
     start_time = perf_counter()
     is_logs_ordering =  each(received(('deliver_upcall', i1, _, t1), from_=n),
@@ -183,31 +216,43 @@ class Checker(process):
                                           has=i2>i1 and t2<t1))
     end_time = perf_counter()
     output("time elapsed in computing logs_ordering: ", end_time - start_time)
+   
+    ### The following is atleast four order of magnitude slower than above
+    # output("in logs_ordering2()")
+    # start_time = perf_counter()
+    # is_logs_ordering = not some(received(('deliver_upcall', i1, _, t1), from_=n)) or \
+    #                     not some(received(('deliver_upcall', i2, _, t2), from_=_n),
+    #                             has= i2>i1 and t2<t1)
+    # end_time = perf_counter()
+    # output("is_logs_ordering: ", is_logs_ordering)
+    # output("time elapsed in computing logs_ordering: ", end_time - start_time)
+
     return is_logs_ordering
 
-  ## Return the number of duplicate requests ordered 
+  ## Return the number of duplicate requests ordered
   def duplicate_requests_count():
     output("in duplicate_requests_count()")
     start_time = perf_counter()
-    count = len(setof(i, received(('deliver_upcall', i, (r, _), _)),
+    unique_reqs = setof(req, received(('deliver_upcall', _, req, _)))
+    count = len(setof(i, received(('deliver_upcall', i, r, _)),
                             r is not None and 
-                            r in setof(r, received(('deliver_upcall', _, (r, _), _))))) - num_requests
+                            r in unique_reqs)) - num_requests
     end_time = perf_counter()
     output("time elapsed in computing duplicate_requests_count: ", end_time - start_time)
     return count
 
-  ### remove?
   ## Return the number of no-ops ordered
   def noops_count():
     output("in noops_count()")
     start_time = perf_counter()
-    count = len(setof(g, received(('noop_sent', g))))
+    count = len(setof(i, received(('deliver_upcall', i, r, _)), r is None))
     end_time = perf_counter()
     output("time elapsed in computing noops_count: ", end_time - start_time)
     return count
 
-  ## check if the total number of ordered messages equals the sum of 
-  ## the number of requests, number of no-ops and number of duplicate messages
+  ## The total number of ordered messages equals the sum of 
+  ## the number of requests, number of no-ops and number of duplicate messages, i.e.,
+  ## The total number of ordered messages is given by global index.
   def gi_count_tally():             ### Helped uncover issue in get_min_idx_recv()
     output("in gi_count_tally()")
     start_time = perf_counter()
@@ -215,12 +260,14 @@ class Checker(process):
                                 or [-1])
     ## check if max gi across nodes is consistent
     if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'global_index', _max_gi, _, _), _), from_=n))) == n_nodes:
-      output("max gi inconsistent across nodes")
+      output("global_index inconsistent across nodes")
       return False
     end_time = perf_counter()
     output("time elapsed in computing gi_count_tally: ", end_time - start_time)
     return (max_gi+1) == (num_requests + n_duplicate_requests + n_noops)
 
+  ## Maximum latest_delivered_index equals global_index, and denotes,
+  ## total number of ordered messages.
   def ldi_count_tally():
     output("in ldi_count_tally()")
     start_time = perf_counter()
@@ -228,13 +275,14 @@ class Checker(process):
                                 or [-1])
     ## check if max ldi across nodes is consistent
     if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', _max_ldi, _, _), _), from_=n))) == n_nodes:
-      output("max ldi inconsistent across nodes")
+      output("latest_delivered_index inconsistent across nodes")
       return False
     end_time = perf_counter()
     output("time elapsed in computing ldi_count_tally: ", end_time - start_time)
     return (max_ldi+1) == (num_requests + n_duplicate_requests + n_noops)
 
-  def write_statistics():                                 ## write statistics to the file
+  ## write statistics to the file
+  def write_statistics():
     f_handle = open(fileName, "a")                        ## open file to write statistics of the run
     output("Writing statistics to the file")
     log_data("received_num", f_handle)
@@ -297,8 +345,9 @@ def main():
       nodes = new(NodeX, num=num_nodes)         ## create Node processes
       clients = new(LB, num=num_clients)
       checker = new (Checker)
+      state = []
       for (rank, node) in enumerate(nodes):     ## setup Node processes
-        setup(node, (checker, nodes, rank, window_size, clients))
+        setup(node, (checker, nodes, rank, window_size, state))
       setup(clients, (list(nodes), n_req_per_client, c_timeout, window_size, test_failure, c_reps))
       setup(checker, (list(nodes), list(clients), fileName, num_requests, test_failure))
       start(checker)                            ## start Checker processes
