@@ -1,0 +1,9 @@
+############################################
+num_requests: 1000
+num_nodes: 5
+num_clients: 10
+window_size: 50
+c_timeout: 20
+test_failure: False
+n_reps: 1
+############################################

@@ -124,8 +124,8 @@ class Checker(process):
     f_handle.write("uniform_integrity: " + str(uniform_integrity()) + "\n")
     f_handle.write("validity: " + str(validity()) + "\n")
     f_handle.write("agreement: " + str(agreement()) + "\n")
-    f_handle.write("log_consistent: " + str(logs_consistency()) + "\n")
-    f_handle.write("log_ordered: " + str(logs_ordering()) + "\n")
+    f_handle.write("log_agreement: " + str(delivery_agreement()) + "\n")
+    f_handle.write("log_ordering: " + str(delivery_ordering()) + "\n")
     f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n")
     f_handle.write("ldi_count_tally: " + str(ldi_count_tally()) + "\n")
     f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
@@ -134,25 +134,17 @@ class Checker(process):
     f_handle.close()
     send('done', to=parent())             ## respond with done to the parent
 
-  # If a server executes an update on seq no i, then the server does not 
-  # execute the update on any other seq no i' > i.
+  ## If a server executes an update on seq no i, then the server does not 
+  ## execute the update on any other seq no i' > i.
   def uniform_integrity():
     output("in uniform_integrity()")
     start_time = perf_counter()
     is_uniform_integrity = each(received(('execute', i1, v), from_=n),
                                 has= not some(received(('execute', i2, _v), from_=_n), 
-                                      has= i2 > i1))
+                                      has= i2>i1))
     end_time = perf_counter()
     output("result of is_uniform_integrity: ", is_uniform_integrity)
     output("time elapsed in computing uniform_integrity: ", end_time - start_time)
-
-    ### The following is a little slower than the above
-    # start_time = perf_counter()
-    # is_uniform_integrity = each(received(('execute', _, v), from_=n),
-    #                             has= len(setof(i, received(('execute', i, _v), from_=_n))) == 1)
-    # end_time = perf_counter()
-    # output("result of is_uniform_integrity2: ", is_uniform_integrity)
-    # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
 
     ### The following is incorrect, because it does not consider all combinations
     # start_time = perf_counter()
@@ -163,7 +155,7 @@ class Checker(process):
     # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
     return is_uniform_integrity
 
-  # If two servers execute the ith update then these updates are identical.
+  ## If two servers execute the ith update then these updates are identical.
   def agreement():
     output("in agreement()")
     start_time = perf_counter()
@@ -181,8 +173,8 @@ class Checker(process):
     # output("time elapsed in computing agreement: ", end_time - start_time)
     return is_agreement
 
-  # Only an update that was introduced by a client and subsequently 
-  # initiated by a server may be executed.
+  ## Only an update that was introduced by a client and subsequently 
+  ## initiated by a server may be executed.
   def validity():
     output("in validity()")
     start_time = perf_counter()
@@ -194,40 +186,47 @@ class Checker(process):
     output("time elapsed in computing validity: ", end_time - start_time)
     return is_validity
 
-  ## The order of messages delivered across nodes must be consistent
-  ### will be redundant if deliver_upcall and execute mean the same
-  def logs_consistency():
-    output("in logs_consistency()")
+  ## If a server delivers ith message using deliver_upcall() then every non-failed server will
+  ## deliver the message and these messages are identical
+  ### This follows from the atomic multicast and round-robin delivery order of Derecho
+  def delivery_agreement():
+    output("in delivery_agreement()")
     start_time = perf_counter()
-    is_logs_consistency = each(i in setof(i, received(('deliver_upcall', i, _, _))),
+    is_delivery_agreement = each(i in setof(i, received(('deliver_upcall', i, _, _))),
                               has= len(setof(n, received(('deliver_upcall', _i, _, _), from_=n))) == n_nodes and 
                                     len(setof(r, received(('deliver_upcall', _i, r, _)))) == 1)
     end_time = perf_counter()
-    output("time elapsed in computing logs_consistency: ", end_time - start_time)
-    return is_logs_consistency
+    output("time elapsed in computing delivery_agreement: ", end_time - start_time)
+    return is_delivery_agreement
 
-  ## If a node executes an i1 update at time t1 then it did not 
-  ## execute i2, i2>i1 update at time t2<t1
-  def logs_ordering():
-    output("in logs_ordering()")
+  # Derecho uses a simple round-robin delivery order: Each active sender
+  # can provide one multicast per delivery cycle, and the messages are 
+  # delivered in round-robin manner.
+  # The global index of M(i, k), gi(M(i, k)) is the position of this message
+  # in the round-robin ordering.
+  ## Messages are delivered in monotincally increasing order defined by its global-index
+  def delivery_ordering():
+    output("in delivery_ordering()")
     start_time = perf_counter()
-    is_logs_ordering =  each(received(('deliver_upcall', i1, _, t1), from_=n),
+    max_gi = max(setof(i, received(('deliver_upcall', i, _, _))))
+    is_delivery_ordering = each(n in nodes, has=len(setof(i, received(('deliver_upcall', i, _, _), from_=_n))) == max_gi+1) and \
+                        each(received(('deliver_upcall', i1, _, t1), from_=n),
                             has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), 
                                           has=i2>i1 and t2<t1))
     end_time = perf_counter()
-    output("time elapsed in computing logs_ordering: ", end_time - start_time)
-   
-    ### The following is atleast four order of magnitude slower than above
-    # output("in logs_ordering2()")
-    # start_time = perf_counter()
-    # is_logs_ordering = not some(received(('deliver_upcall', i1, _, t1), from_=n)) or \
-    #                     not some(received(('deliver_upcall', i2, _, t2), from_=_n),
-    #                             has= i2>i1 and t2<t1)
-    # end_time = perf_counter()
-    # output("is_logs_ordering: ", is_logs_ordering)
-    # output("time elapsed in computing logs_ordering: ", end_time - start_time)
+    output("time elapsed in computing delivery_ordering: ", end_time - start_time)
 
-    return is_logs_ordering
+    ## The following only checks that messages are delivered in a monotically increasing 
+    ## order of its global index, but it does not check the round-robin delivery, ie, 
+    ## a message is delivered for each index less than or equal to the highest global index
+    # output("in delivery_ordering()")
+    # start_time = perf_counter()
+    # is_delivery_ordering =  each(received(('deliver_upcall', i1, _, t1), from_=n),
+    #                         has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), 
+    #                                       has=i2>i1 and t2<t1))
+    # end_time = perf_counter()
+    # output("time elapsed in computing delivery_ordering: ", end_time - start_time)
+    return is_delivery_ordering
 
   ## Return the number of duplicate requests ordered
   def duplicate_requests_count():

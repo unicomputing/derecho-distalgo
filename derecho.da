@@ -274,6 +274,8 @@ class Node(process):
       return
     send_msg(msg)                                 ## send the message in the next slot
 
+  ### ? Optimise
+  ### Currently only one message is read per node, whereas there may be many messages pending to be received per node
   # A.2.4 Receiving.
   ## receive a message and increment the current slot based on the window size
   def receive_msg():                                       # always {
