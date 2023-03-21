@@ -65,7 +65,7 @@ class SSTRow:  ## The variables and their initial values are not explicitly ment
     self.suspected = [False] * num_nodes ## LIST; whether the node is suspected to be crashed
     self.num_committed = 0     ## number of node changes committed by the node, as suggested by the Leader
     self.num_acked = 0         ## number of node changes acknowleged by the node, as suggested by the Leader
-    self.received_num = [-1] * num_nodes ## LIST; number of messages received by the nodc
+    self.received_num = [-1] * num_nodes ## LIST; number of messages received by the node
     self.wedged = False        ## whether the node has wedged its SST
     self.changes = []          ## list of node ids of crashed/new nodes
     self.num_changes = 0       ## number of node changes, i.e., length of self.changes
@@ -303,11 +303,11 @@ class Node(process):
     ### the following is added to avoid stalls, it sends a null(no-op) message for the current sequence number
     if my_rank < i and k > sent_num:                   ## if(my_rank < i && I have not sent M(my_rank, k))  ### changed, sent_num should be used to check the message number 
       for _ in range(k-sent_num):                      ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
-        output("sending null1")
+        output("sending no-op, checkpoint 1")
         send_msg(None)                                 ##     send a null message 
     elif my_rank > i and k > sent_num+1:               ## else if(my_rank > i && I have not sent M(my_rank, k-1))
       for _ in range(k-sent_num-1):                    ##   for every skipped slot  ### Resolves Issue: when the buffer is full, the null message for this global number is skipped
-        output("sending null2")
+        output("sending no-op, checkpoint 2")
         send_msg(None)                                 ##     send a null message
 
     msgs[gi(i, k)] = msg                               #   msgs[hi(M(i,k))] = M(i,k);
@@ -524,7 +524,7 @@ class Node(process):
     if sst[row].freeze:                 ## if the row is frozen for updates, ignore
       output("The update is not done because of frozen row: ", row, " node id: ", nodes[row])
       return
-    update_sst(row, col, val, index)      ## update the local SST
+    update_sst(row, col, val, index)    ## update the local SST
 
   # Next, Derecho creates a new SST instance for the new epoch and associates an RDMC session
   # with each sender for each subgroup or shard (thus, if a subgroup has k senders, then it will have
@@ -541,9 +541,9 @@ class Node(process):
     self.sst = [SSTRow(num_nodes, window_size) for _ in range(num_nodes)] ## reinitialize sst 
     self.my_rank = curr_view.members.index(self) ## set my_rank based on the index in the new_view
     c_epoch = curr_view.epoch
-    send(('view_change', curr_view.members, c_epoch), to=others)
+    send(('view_change', curr_view.members, c_epoch), to=others)  ## send the completion of view change to all other nodes
     output("view_change message sent to all other nodes; waiting to receive the same from others")
-    await(len(setof(p, received(('view_change', m, _c_epoch), from_=p))) == num_nodes-1)
+    await(len(setof(p, received(('view_change', m, _c_epoch), from_=p))) == num_nodes-1) ## wait to receive completion of view change from all other nodes
     output("view_change message received from all other nodes; starting the epoch")
     write_sst(my_rank, 'changes', old_sst_row.changes[num_changes_installed:]) ## copy over the pending changes to the new view's sst
     write_sst(my_rank, 'num_installed', old_sst_row.num_installed + num_changes_installed) ## update the number of changes installed with new changes installed
@@ -585,16 +585,20 @@ class RequestMetrics:
 class Sim(process):
   """simulator for a failure scenario"""
   def setup(nodes, num_requests, test_failure, msg_size):
+    ## nodes; list of nodes in the system
+    ## num_request; total number of requests to be sent
+    ## test_failure; whether to test a node failure scenario
+    ## msg_sizse; size of the request message sent to the system
     self.metrics = {}                     ## stores the metrics per request id
-    self.n_nodes = len(nodes)
-    self.received_count = 0
+    self.n_nodes = len(nodes)             ## number of nodes in the system
+    self.resp_rcvd_count = 0              ## count of number of responses received
 
   def run():
-    failure_injected = False
+    failure_injected = False              ## whether a failure message has been sent to the system
 
     for tid in range(num_requests):
       metrics[tid] = RequestMetrics(time.clock(), time.time())
-      n = random.sample(nodes,1)
+      n = random.sample(nodes,1)          ## randomly select a node to send the request
       output("sent request: ", tid, " to node: ", n)
       send(('request', (self, tid, os.urandom(msg_size))), to=n)
 
@@ -627,8 +631,8 @@ class Sim(process):
       cur_metric.cpu_end_time = time.clock()
       cur_metric.run_end_time = time.time()
       cur_metric.success = True
-      received_count += 1
-      output("---- Received tid = ", tid, " from ", p, " with received_count: ", received_count)  ## Print the response received from the system
+      resp_rcvd_count += 1
+      output("---- Received tid = ", tid, " from ", p, " with resp_rcvd_count: ", resp_rcvd_count)  ## Print the response received from the system
 
 def main():
 #   config(channel is fifo, handling is all, clock is lamport, visualize is {
@@ -651,9 +655,9 @@ def main():
   config(channel is fifo, clock is lamport, handling = 'all')
 
   num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5     ## number of nodes in the system
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 40 ## number of requests from applications
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10 ## number of requests from applications
   nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1         ## number of repetitions to calculate the metrics
-  msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the message sent to the derecho system
+  msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1      ## size of the request message sent to the derecho system
   window_size = 5                                              ## window_size, should be small
   test_failure = False                                         ## set to True to test a failure scenario
 
@@ -662,8 +666,7 @@ def main():
     t1 = time.time()
     nodes = sorted(list(new(Node, num= num_nodes)))    ## create Node processes
     sim = new(Sim, (nodes, num_requests, test_failure, msg_size))  ## create and set up crash and client simulator process
-    output("type of nodes is: ", type(nodes))
-    state = []
+    state = []                            ## state to which clients commands are applied to
     for (rank, node) in enumerate(nodes): ## setup Node processes
       setup(node, (nodes, rank, window_size, state))
     start(nodes)                          ## start Node processes
