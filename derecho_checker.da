@@ -132,8 +132,8 @@ class Checker(process):
     f_handle.write("agreement: " + str(agreement()) + "\n")
     f_handle.write("delivery_agreement: " + str(delivery_agreement()) + "\n")
     f_handle.write("delivery_ordering: " + str(delivery_ordering()) + "\n")
-    f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n")       ### may give wrong results in case of membership changes
-    f_handle.write("ldi_count_tally: " + str(ldi_count_tally()) + "\n")     ### may give wrong results in case of membership changes
+    f_handle.write("gi_count_tally: " + str(check_count_tally("global_index")) + "\n")
+    f_handle.write("ldi_count_tally: " + str(check_count_tally("latest_delivered_index")) + "\n")
     f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
     f_handle.write("noops_count: " + str(n_noops) + "\n")
     f_handle.write("************************************************\n")
@@ -244,44 +244,31 @@ class Checker(process):
 
   ## The total number of ordered messages equals the sum of 
   ## the number of requests, number of no-ops and number of duplicate messages, i.e.,
-  ## The total number of ordered messages is given by global index.
-  def gi_count_tally():             ### Helped uncover issue in get_min_idx_recv()
-    output("in gi_count_tally()")
-    total_max_gi = 0
-    start_time = perf_counter()
-    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
-      ep_nodes = ep_dict[ep]
-      max_gi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _ep), _, _))) 
-                                  or [-1])
-      ## check if max gi across nodes is consistent
-      if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'global_index', _max_gi, _, _ep), _, _), from_=n))) >= len(ep_nodes)-1:
-        output("global_index inconsistent across nodes")
-        return False
-      total_max_gi += max_gi+1
-    end_time = perf_counter()
-    output("time elapsed in computing gi_count_tally: ", end_time - start_time)
-    output("gi_count_tally: ", total_max_gi == (num_requests + n_duplicate_requests + n_noops))
-    return total_max_gi == (num_requests + n_duplicate_requests + n_noops)
-
+  ## The total number of ordered messages is given by global index.   ### Helped uncover issue in get_min_idx_recv()
   ## Maximum latest_delivered_index equals global_index, and denotes,
   ## total number of ordered messages.
-  def ldi_count_tally():
+  def check_count_tally(tag):
     output("in ldi_count_tally()")
-    total_max_ldi = 0
+    total_max_i = 0
     start_time = perf_counter()
     for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
-      ep_nodes = ep_dict[ep]
-      max_ldi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', r, _, _ep), _, _))) 
+      max_i = max(setof(r, received(('sent', ('control','rdma_write_sst', _, _tag, r, _, _ep), _, _))) 
                                   or [-1])
-      ## check if max ldi across nodes is consistent
-      if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', _max_ldi, _, _ep), _, _), from_=n))) == len(ep_nodes):
-        output("latest_delivered_index inconsistent across nodes in epoch: ", ep)
-        return False
-      total_max_ldi += max_ldi+1
+      ## check if max index across nodes is consistent
+      num_nodes_max_i = len(setof(n, received(('sent', ('control','rdma_write_sst', _, _tag, _max_i, _, _ep), _, _), from_=n)))
+      if ep == max(ep_dict) or len(ep_dict[ep]) < len(ep_dict[ep+1]):
+        if not num_nodes_max_i == len(ep_dict[ep]):
+          output("", tag, " inconsistent across nodes for epoch: ", ep)
+          return False
+      else:
+        if not num_nodes_max_i >= len(ep_dict[ep+1]) :
+          output("", tag, " inconsistent across nodes for epoch: ", ep)
+          return False
+      total_max_i += max_i+1
       end_time = perf_counter()
-    output("time elapsed in computing ldi_count_tally: ", end_time - start_time)
-    output("ldi_count_tally: ", total_max_ldi == (num_requests + n_duplicate_requests + n_noops))
-    return total_max_ldi == (num_requests + n_duplicate_requests + n_noops)
+    output("time elapsed in computing check_count_tally with tag: ", tag, " is ", end_time - start_time)
+    output("check_count_tally with tag: ", tag, " is ", total_max_i == (num_requests + n_duplicate_requests + n_noops))
+    return total_max_i == (num_requests + n_duplicate_requests + n_noops)
 
   ## write statistics to the file
   def write_statistics():
