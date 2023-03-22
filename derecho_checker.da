@@ -132,8 +132,8 @@ class Checker(process):
     f_handle.write("agreement: " + str(agreement()) + "\n")
     f_handle.write("delivery_agreement: " + str(delivery_agreement()) + "\n")
     f_handle.write("delivery_ordering: " + str(delivery_ordering()) + "\n")
-    # f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n")       ### may give wrong results in case of membership changes
-    # f_handle.write("ldi_count_tally: " + str(ldi_count_tally()) + "\n")     ### may give wrong results in case of membership changes
+    f_handle.write("gi_count_tally: " + str(gi_count_tally()) + "\n")       ### may give wrong results in case of membership changes
+    f_handle.write("ldi_count_tally: " + str(ldi_count_tally()) + "\n")     ### may give wrong results in case of membership changes
     f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
     f_handle.write("noops_count: " + str(n_noops) + "\n")
     f_handle.write("************************************************\n")
@@ -151,24 +151,6 @@ class Checker(process):
     end_time = perf_counter()
     output("result of is_uniform_integrity: ", is_uniform_integrity)
     output("time elapsed in computing uniform_integrity: ", end_time - start_time)
-
-    ### Similar performance
-    # output("in uniform_integrity()")
-    # start_time = perf_counter()
-    # is_uniform_integrity = each(received(('execute', i1, v1), from_=n),
-    #                             received(('execute', i2, v2), from_=_n),
-    #                             has= (i1==i2 and v1 == v2) or (i1 != i2 and v1 != v2))
-    # end_time = perf_counter()
-    # output("result of is_uniform_integrity2: ", is_uniform_integrity)
-    # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
-
-    ### The following is incorrect, because it does not consider all combinations
-    # start_time = perf_counter()
-    # is_uniform_integrity = not some(received(('execute', i1, v), from_=n)) or \
-    #                         not some(received(('execute', i2, _v), from_=_n), 
-    #                                   has= i2 > i1)
-    # end_time = perf_counter()
-    # output("time elapsed in computing uniform_integrity: ", end_time - start_time)
     return is_uniform_integrity
 
   ## If two servers execute the ith update then these updates are identical.
@@ -180,31 +162,6 @@ class Checker(process):
     end_time = perf_counter()
     output("agreement1: ", is_agreement)
     output("time elapsed in computing agreement1: ", end_time - start_time)
-
-    ## uncomment to check non-agreement information
-    # if not is_agreement:
-    #   for x in setof(i, received(('execute', i, _))):
-    #     if len(setof(v, received(('execute', _x, v)))) != 1:
-    #       output("for i: ", x, ", there is no agreement")
-    #       for val in setof((v, fr), received(('execute', _x, v), from_=fr)):
-    #         output("non agreed val and from: ", val)
-            
-    # output("in agreement()")
-    # start_time = perf_counter()
-    # is_agreement = each(received(('execute', i, _)),
-    #                   has= len(setof(v, received(('execute', _i, v)))) == 1)
-    # end_time = perf_counter()
-    # output("agreement2: ", is_agreement)
-    # output("time elapsed in computing agreement2: ", end_time - start_time) ### 14.7s for 100*10 requests
-
-    # ### The following is about an order of magnitude slower than above
-    # start_time = perf_counter()
-    # is_agreement = each(received(('execute', i, v1)), 
-    #                   received(('execute', i, v2)), 
-    #                   has= v1==v2)
-    # end_time = perf_counter()
-    # output("agreement3: ", is_agreement)
-    # output("time elapsed in computing agreement3: ", end_time - start_time) ### 14.6s for 100*10 requests
     return is_agreement
 
   ## Only an update that was introduced by a client and subsequently 
@@ -259,18 +216,6 @@ class Checker(process):
       output("is_delivery_ordering for ep:", ep, " is:", is_delivery_ordering)
     end_time = perf_counter()
     output("time elapsed in computing delivery_ordering: ", end_time - start_time)
-
-    ## The following only checks that messages are delivered in a monotically increasing 
-    ## order of its global index, but it does not check the round-robin delivery, ie, 
-    ## a message is delivered for each index less than or equal to the highest global index
-    # output("in delivery_ordering()")
-    # start_time = perf_counter()
-    # is_delivery_ordering =  each(received(('deliver_upcall', i1, _, t1), from_=n),
-    #                         has= not some(received(('deliver_upcall', i2, _, t2), from_=_n), 
-    #                                       has=i2>i1 and t2<t1))
-    # end_time = perf_counter()
-    # output("time elapsed in computing delivery_ordering: ", end_time - start_time)
-
     output("is_delivery_ordering: ", is_delivery_ordering)
     return is_delivery_ordering
 
@@ -300,39 +245,47 @@ class Checker(process):
   ## The total number of ordered messages equals the sum of 
   ## the number of requests, number of no-ops and number of duplicate messages, i.e.,
   ## The total number of ordered messages is given by global index.
-  # def gi_count_tally():             ### Helped uncover issue in get_min_idx_recv()
-  #   output("in gi_count_tally()")
-  #   start_time = perf_counter()
-  #   max_gi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _), _, _))) 
-  #                               or [-1])
-  #   ## check if max gi across nodes is consistent
-  #   if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'global_index', _max_gi, _, _), _, _), from_=n))) == n_nodes:
-  #     output("global_index inconsistent across nodes")
-  #     return False
-  #   end_time = perf_counter()
-  #   # output("time elapsed in computing gi_count_tally: ", end_time - start_time)
-  #   output("gi_count_tally: ", (max_gi+1) == (num_requests + n_duplicate_requests + n_noops))
-  #   return (max_gi+1) == (num_requests + n_duplicate_requests + n_noops)
+  def gi_count_tally():             ### Helped uncover issue in get_min_idx_recv()
+    output("in gi_count_tally()")
+    total_max_gi = 0
+    start_time = perf_counter()
+    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      ep_nodes = ep_dict[ep]
+      max_gi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'global_index', r, _, _ep), _, _))) 
+                                  or [-1])
+      ## check if max gi across nodes is consistent
+      if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'global_index', _max_gi, _, _ep), _, _), from_=n))) >= len(ep_nodes)-1:
+        output("global_index inconsistent across nodes")
+        return False
+      total_max_gi += max_gi+1
+    end_time = perf_counter()
+    output("time elapsed in computing gi_count_tally: ", end_time - start_time)
+    output("gi_count_tally: ", total_max_gi == (num_requests + n_duplicate_requests + n_noops))
+    return total_max_gi == (num_requests + n_duplicate_requests + n_noops)
 
   ## Maximum latest_delivered_index equals global_index, and denotes,
   ## total number of ordered messages.
-  # def ldi_count_tally():
-  #   output("in ldi_count_tally()")
-  #   start_time = perf_counter()
-  #   max_ldi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', r, _, _), _, _))) 
-  #                               or [-1])
-  #   ## check if max ldi across nodes is consistent
-  #   if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', _max_ldi, _, _), _, _), from_=n))) == n_nodes:
-  #     output("latest_delivered_index inconsistent across nodes")
-  #     return False
-  #   end_time = perf_counter()
-  #   # output("time elapsed in computing ldi_count_tally: ", end_time - start_time)
-  #   output("ldi_count_tally: ", (max_ldi+1) == (num_requests + n_duplicate_requests + n_noops))
-  #   return (max_ldi+1) == (num_requests + n_duplicate_requests + n_noops)
+  def ldi_count_tally():
+    output("in ldi_count_tally()")
+    total_max_ldi = 0
+    start_time = perf_counter()
+    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      ep_nodes = ep_dict[ep]
+      max_ldi = max(setof(r, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', r, _, _ep), _, _))) 
+                                  or [-1])
+      ## check if max ldi across nodes is consistent
+      if not len(setof(n, received(('sent', ('control','rdma_write_sst', _, 'latest_delivered_index', _max_ldi, _, _ep), _, _), from_=n))) == len(ep_nodes):
+        output("latest_delivered_index inconsistent across nodes in epoch: ", ep)
+        return False
+      total_max_ldi += max_ldi+1
+      end_time = perf_counter()
+    output("time elapsed in computing ldi_count_tally: ", end_time - start_time)
+    output("ldi_count_tally: ", total_max_ldi == (num_requests + n_duplicate_requests + n_noops))
+    return total_max_ldi == (num_requests + n_duplicate_requests + n_noops)
 
   ## write statistics to the file
   def write_statistics():
-    f_handle = open(stats_file_name, "a")                        ## open file to write statistics of the run
+    f_handle = open(stats_file_name, "a")                 ## open file to write statistics of the run
     output("Writing statistics to the file")
     log_data("received_num", f_handle)
     log_data("latest_received_index", f_handle)
