@@ -1,5 +1,7 @@
 [
-        {"num_requests": 1000, "num_nodes": 5, "window_size": 50, "n_reps": 6, "test_failure" : false},
-        {"num_requests": 5000, "num_nodes": 5, "window_size": 100, "n_reps": 2, "test_failure" : false},
-        {"num_requests": 10000, "num_nodes": 5, "window_size": 200, "n_reps": 1, "test_failure" : false}
+    {"num_requests": 5, "num_nodes": 3, "num_clients": 2,"window_size": 10, "c_timeout": 10, "n_reps": 10, "test_failure" : false},
+    {"num_requests": 50, "num_nodes": 3, "num_clients": 2,"window_size": 100, "c_timeout": 10, "n_reps": 10, "test_failure" : false},
+    {"num_requests": 100, "num_nodes": 3, "num_clients": 2,"window_size": 200, "c_timeout": 10, "n_reps": 10, "test_failure" : false},
+    {"num_requests": 250, "num_nodes": 3, "num_clients": 2,"window_size": 500, "c_timeout": 10, "n_reps": 10, "test_failure" : false},
+    {"num_requests": 500, "num_nodes": 3, "num_clients": 2,"window_size": 1000, "c_timeout": 10, "n_reps": 10, "test_failure" : false}
 ]
