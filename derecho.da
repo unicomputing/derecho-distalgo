@@ -39,7 +39,7 @@ def min_and_idx(l):
 # column_name->string|string[int] // e.g. wedged or latest_received_index[3]
 # sst_row->sst[row_rank]  ## row_rank is index of the row in sst
 # row_rank->int           ## index of row is in 0..len(sst)
-# sst_column->sst[*].column_nme
+# sst_column->sst[*].column_name
 # sst_entry->sst_row.column_name // e.g. sst[0].stable_msg_index[0]
 
 # A rank of a member is the index of its row in the SST.
@@ -78,29 +78,29 @@ class SSTRow:
     self.slots = [Slot() for _ in range(window_size)]  # (p.33) vector of window_size slots ## for client request msgs
     self.received_num = [-1] * n                       # (p.33) number of messages received from each node  ### num-1
                                                          ## initialized in Node.init(), and set in receive_req()
-    self.global_index = -1                 # ## global index of last messsage received from the most lagging node
+    self.global_index = -1                 # ## global index of last message received from the most lagging node
     self.latest_delivered_index = -1       # ## min of self.global_index over all members
     self.latest_received_index = [-1] * n  # ## index of latest msg received from each node, set in recv to received_num
-                                             ## i.e., self.received_num-1  ### redundant ???not sure with null msgs
+                                             ## i.e., self.received_num-1  ### redundant ???but not clear with null msgs
     self.min_latest_received = [-1] * n    # ## for each node, min of latest_received_index over all rows in SST
     self.suspected = [False] * n           # ## for each node, whether that node is suspected to have failed
-    self.wedged = False     # ## true (frozen)??? when any node is suspected, due to failures or joins
+    self.wedged = False     # ## true when any node is suspected ???or terminating a view, due to failures or joins
     self.changes = []       # ## list of nodes suspected (or added from joins) to proposed as changes by the leader
     self.num_changes = 0    # ## number of nodes in self.changes, i.e., length of self.changes
-    self.num_acked = 0      # ## number of nodes in self.changes acknowleged by the node???  ### used but never defined 
-                              ## currently set in 2 places by us, both using the same num_changes???
+    self.num_acked = 0      # ## number of nodes in self.changes acknowledged??? by the node  ### used but never defined 
+                              ### currently set in 2 places by us, both using num_changes???
     self.num_committed = 0  # ## min of self.num_acked??? over not suspected nodes
     self.num_installed = 0  # ## number of nodes installed (added/removed) by the node, as proposed by the leader
-    self.ragged_edge_computed = False  # ## true for leader calling terminate_epoch or others after leader did
+    self.ragged_edge_computed = False  # ## true for leader calling terminate_epoch or others after leader did;
                                          ## the call happens when leader's num_committed > self's num_installed
-    self.freeze = False  ##??? whether the node is suspected by some (???) node and thus frozen (by a call) for updates
-    self.active = False  # (p.41) #??? whether the epoch is active, i.e., ??? epoch, wedged, not in pseudocode
+    self.freeze = False  ##??? whether the node is frozen for updates, suspected by some??? node ### is a call in pseudocode
+    self.active = False  # (p.40) ##??? whether the epoch is active, ### not in pseudocode
 
 class View(): 
   """A view that holds the information of an epoch. An epoch is the duration of a view."""
   def __init__(self, n, epoch=0, leader_rank=0):
     # n:  ## number of members in the view
-    self.epoch = epoch              # ## epoch number of the view; epoch and view used interchangably in the paper
+    self.epoch = epoch              # ## epoch number of the view; epoch and view used interchangeably in the paper
     self.leader_rank = leader_rank  # ## index of the leader ???row in the view
     self.members = [None] * n       # ## list of member nodes in the view
     self.failed = [False] * n       # ## for each node, whether that node is suspected and thus considered failed
@@ -110,12 +110,9 @@ class View():
     self.failed.append(False)         ## add the failed attribute corresponding to the added node
 
   def remove_member(self, node):      ## remove node from members of the view
-    #-try:
     index = self.members.index(node)  ## get index of node in members
     del self.failed[index]            ## remove failed entry for node
     self.members.remove(node)         ## remove node from members
-    #-except Exception as e:
-    #-  output("Exception while removing member: ", node, " from view. ", e)  ## how could???
 
 class Node(process):
 
@@ -124,27 +121,27 @@ class Node(process):
   ## each write to local SST must be multicasted to all other nodes to update their copies of the row.
   def write_sst(row, col, val, index=None):  ## write SST entry at row and col, at index if col is a list, with val
     wt_local_sst(row, col, val, index)                               ## write local SST
-    msg = ('rdma_write_sst', row, col, val, index, curr_view.epoch)  ## msg to send to others  ??? epoch is hack
+    msg = ('rdma_write_sst', row, col, val, index, curr_view.epoch)  ## msg to send to others  ???? epoch is hack
     msg_tagged = ('data' if col == "slots" else 'control',) + msg    ## tag the msg as data or control
     send(msg_tagged, to= others)                                     ## send the message to other nodes
     
   def receive(msg = (_, 'rdma_write_sst', row, col, val, index, epoch)):  ## _ ignores tag 'data' or 'control'
-    output("message received is: ", ('rdma_write_sst', row, col, val, index, epoch))
-    ## ??? all besides last line are hacks (and missing sources) and shouldn't be here (right place depends on source)
+    output("received: ", ('rdma_write_sst', row, col, val, index, epoch))
+    #### ????all besides last line are hacks (and missing sources) and shouldn't be here (right place depends on source)
     if epoch != curr_view.epoch:                  # (p.?) ## if msg is for a different epoch, ignore
-      output('rdma_write_sst msg received for different epoch, current: ', curr_view.epoch, ' and msg: ', epoch)
+      output('received rdma_write_sst msg for different epoch, current: ', curr_view.epoch, ' and msg: ', epoch)
       return
     if col == "slots" and any(curr_view.failed):  # (p.?) ## if msg is a req and curr view has failed members, ignore
-      output("Failure detected, no new data messages will be accepted")
+      output("Failure detected, new data messages dropped")
       return
     if sst[row].freeze:                           # (p.?) ## if msg is for a row frozen for updates, ignore
-      output("ignored because of frozen row: ", row, " node: ", G[row])
+      output("ignored rdma_write_sst msg because of frozen row: ", row, " node: ", G[row])
       return
     wt_local_sst(row, col, val, index)            ## write local SST
 
   def wt_local_sst(row, col, val, index=None):  ## write local entry at row and col, at index if col is a list, with val
     if index is None:                           ## if index is None, meaning col is not a list
-      setattr(sst[row], col, val)               ## just update sst entry with val
+      setattr(sst[row], col, val)               ## just update SST entry with val
     else:                                       ## col is a list
       entry = getattr(sst[row], col)            ## retrieve SST entry at row and col
       entry[index] = val                        ## update the element at index of entry with val
@@ -154,41 +151,37 @@ class Node(process):
 
   # (p.32, under A.1.1) reducer function, for example,
   def Min(col, index=None):  # (p.32) Min(sst_column) represents the minimum of all the entries of the column.
-    """min value of column col, at given index if col is a list, in the sst"""
-    #-try:
+    """min value of column col, at given index if col is a list, in sst"""
     if index is None:
       return min(getattr(sst[row], col) for row in range(len(sst)))
     else:
       return min(getattr(sst[row], col)[index] for row in range(len(sst)))
-    #-except:
-    #-   return -1  ##??? how could, should remove try; get exact errors, if any, and handle them
 
   def NotFailed():  # (p.32) NotFailed is a filtering function that removes the rows that are suspected, from the column
     return [row for row in range(len(sst)) if not sst[my_rank].suspected[row]]
 
   def MinNotFailed(col):  # (p.32) MinNotFailed(sst_column) is a Min(NotFailed(sst_column))  ### direct Min not work
-    """min of all values of column col for non-suspected nodes in the sst"""
+    """min of all values of column col for non-suspected nodes in sst"""
     return min(getattr(sst[row], col) for row in NotFailed())
 
   def LogicalAndNotFailed(col):
-    """logical 'AND' of all values in column col for non-suspected nodes in the sst"""
+    """logical 'AND' of all values in column col for non-suspected nodes in sst"""
     return all(getattr(sst[row], col) for row in NotFailed())
 
   def LogicalOr(col):
-    """logical 'OR' of all values in column col in the sst"""
+    """logical 'OR' of all values in column col in sst"""
     return any(getattr(sst[row], col) for row in range(len(sst)))
 
   def Count(col, val):  # (p.32) Count(sst_column, value) counts the number of entries that are equal to value.
-    """count of rows in the sst where column col has value val"""
-    return len(row for row in range(len(sst)) if getattr(sst[row], col) == val)
+    """count of rows in sst where column col has value val"""
+    return len([row for row in range(len(sst)) if getattr(sst[row], col) == val])
 
   def min_with_val(col, val):
-    """min rank of row in the sst where column col has value val"""
+    """min rank of row in sst where column col has value val"""
     return min(row for row in range(len(sst)) if getattr(sst[row], col) == val)
 
   def max_gi():  # (at call) max over n of (sst[my_rank].min_latest_received[n] * |G| + n)"""
     """max value of the global index of all the messages in the group,"""
-    #- if len(G) < 1: return 0  ### how could be ???
     return max((sst[my_rank].min_latest_received[i] * len(G) + i) for i in range(len(G)))
 
   # (p.32) A.1.2  Message Ordering.  The group is represented by G.
@@ -198,7 +191,7 @@ class Node(process):
     return sst[i].slots[k%window_size].buf
 
   def gi(i, k):  # The global index of M(i, k), gi(M(i, k)) is the position of this message in the round-robin ordering.
-    """global message index of a message given sender's rank i and sender' messge index k"""
+    """global message index of a message given sender's rank i and sender' message index k"""
     return k * len(G) + i  # gi(M(i, k)) = i * |G| + k  ### bug fixed, in ERRATA of paper
 
   # (p.33) A.2.2 Initialization.
@@ -213,12 +206,13 @@ class Node(process):
                         #     sst[i].slots[k].index = 0 }}
                         # // helper variable
     self.sent_num = -1  # sent_num = -1  ## number of messages sent by this node - 1
-    self.msgs = {}      # ## dict of requests received but not yet executed, indexed by global index ???why not list?
+    self.msgs = {}      # ## dict of requests received but not yet executed, indexed by global index ????why not list?
     self.others = set(G)-{self}  ## set of other nodes in the group
     return n, sst, sent_num, msgs, others
 
+
   def setup(G, my_rank, window_size, max_msg_size, state):
-    # G:            ## list of nodes in the group ???list order needed
+    # G:            ## list of nodes in the group ????list order needed?
     # my_rank:      ## index of this node in the list of nodes
     # window_size:  ## size of the vector of slots for SST
     # max_msg_size: ## max message size, in number of bytes/chars???
@@ -229,8 +223,8 @@ class Node(process):
     output('initial group: ', G)
 
   def run():
-    write_sst(my_rank, "active", True)    # (p.?) ## mark the epoch as active
-    await(LogicalAndNotFailed('active'))  # (p.?) ## wait for the ???system to be active
+    write_sst(my_rank, "active", True)    # (p.?) ## mark the epoch??? as active ????should be in setup/init then
+    await(LogicalAndNotFailed("active"))  # (p.?) ## wait for the ???system to be active
 
     while True:
       --receive_messages  ## yield to receive messages
@@ -243,10 +237,11 @@ class Node(process):
       # (p.36) A.4.2  Terminating old view and installing new view after wedging.
       elif (sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked
                                                   # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
-            and curr_view.leader_rank != my_rank):#   // |= leader proposed a new change
-                                                  #   if (curr_view.leader_rank != my_rank) {
+                                                  #   // |= leader proposed a new change
+            and curr_view.leader_rank != my_rank):#   if (curr_view.leader_rank != my_rank) {
         output("leader: ", G[curr_view.leader_rank], " proposed a new change")
-        leader_rank = curr_view.leader_rank  
+        output("changes list received from leader is: ", sst[my_rank].changes)  ## ???? wrong output
+        leader_rank = curr_view.leader_rank       ##  ### added definition needed for uses below
         write_sst(my_rank, "num_acked", sst[leader_rank].num_changes)
                                                   ##    acknowledge the changes;  ### missing but needed to terminate???
         write_sst(my_rank, "num_changes", sst[leader_rank].num_changes)
@@ -254,28 +249,27 @@ class Node(process):
                                                   #     // copy entire changes vector from the leader's row
         write_sst(my_rank, "changes", sst[leader_rank].changes)
                                                   #     sst[my_rank].changes = sst[leader_rank].changes;
-        output("Changes list received from leader is: ", sst[my_rank].changes)
-        write_sst(my_rank, 'num_committed', sst[leader_rank].num_committed)
+        write_sst(my_rank, "num_committed", sst[leader_rank].num_committed)
                                                   #     sst[my_rank].num_committed = sst[leader_rank].num_committed;
                                                   #     curr_view.wedge();  ### not defined
         write_sst(my_rank, "wedged", True)        #     sst[my_rank].wedged = true;
                                                   #     // |= acknowledged leader's proposal and wedged the current view
                                                   #   }}
       elif (curr_view.leader_rank == my_rank and  # when (curr_view.leader_rank == my_rank and 
-            MinNotFailed('num_acked') > sst[my_rank].num_committed):
+            MinNotFailed("num_acked") > sst[my_rank].num_committed):
                                                   #       MinNotFailed(sst[*].num_acked) > sst[my_rank].num_committed) {
                                                   #   // |= K U\F ( acknowledged a new proposal )
         output("commit_proposal_leader: ",  G[curr_view.leader_rank])
-        write_sst(my_rank, "num_committed", MinNotFailed('num_acked'))
+        write_sst(my_rank, "num_committed", MinNotFailed("num_acked"))
                                                   #   sst[my_rank].num_committed = MinNotFailed(sst[*].num_acked);
-                                                  #   // |= commited acknowledged proposals
+                                                  #   // |= committed acknowledged proposals
                                                   # }
       elif sst[curr_view.leader_rank].num_committed > sst[my_rank].num_installed:
                                 # when (sst[my_rank].num_committed[leader_rank] > sst[my_rank].num_installed[my_rank]) {
                                               #   // |= leader committed a new membership change
         output("leader: ",  G[curr_view.leader_rank], " committed a new membership change")
                                               #   curr_view.wedge();  ### not defined
-        write_sst(my_rank, "wedged", True)    #   sst[my_rank].wedged = true;  ### why wedge here? the system??? is already wedged!
+        write_sst(my_rank, "wedged", True)    #   sst[my_rank].wedged = true;  ????### why wedge here? the system??? is already wedged!
         await(LogicalAndNotFailed("wedged"))  #   when (LogicalAndNotFailed(sst[*].wedged) == true) {
                                               #     // |= K U\F (current view is wedged)
         terminate_epoch()                     #     terminate_epoch(); }}
@@ -292,52 +286,52 @@ class Node(process):
 
   # (p.33) A.2.3 Sending.  First the sending node reserves one of the slots:
   def get_buffer(msg_size):                       # char* get_buffer(msg_size) {
-    assert msg_size <= max_msg_size                #   assert(msg_size <= max_msg_size);
-                              #   // A Slot can be reused if the previos message in that slot was received by everyone
+    assert msg_size <= max_msg_size               #   assert(msg_size <= max_msg_size);
+                              #   // A Slot can be reused if the previous message in that slot was received by everyone
                                                   #   // Combine it with the FIFO ordering of messages
     completed_num = Min("received_num", my_rank)  #   completed_num = Min{sst[*].received_num[my_rank]};
     if sent_num - completed_num >= window_size:   #   if (sent_num - completed_num < window_size) { 
-      ### changed < to > in ERRATA  ### changed to >= to avoid deadlock
-      ### e.g., window_size 10, sent_num 10 (11 sent), completed_num 0 (1 completed), 
-      ### then slot below is 1, and data in slot[1] would be overwritten, and thus system??? reaching a deadlock???
-      output("slot buffer seems full, returning, sent-num: ", sent_num, " completed-num: ", completed_num)
+      ### changed < to > in ERRATA of paper  ### changed to >= to avoid deadlock
+      #### e.g., window_size 10, sent_num 10 (11 sent), completed_num 0 (1 completed), 
+      #### then slot below is 1, and data in slot[1] would be overwritten, and thus system??? reaching a deadlock???
+      output("slot verctor full, returning, sent_num: ", sent_num, " completed_num: ", completed_num)
       return None                                 #     return nullptr; }
     slot = (sent_num + 1) % window_size           #   slot = (sent_num + 1) % window_size;
     sst[my_rank].slots[slot].size = msg_size      #   sst[my_rank].slots[slot].size = msg_size;
     return slot                                   #   return sst[my_rank].slots[slot].buf; }  ### return slot
   
   # (p.34) After get_buffer returns a non-null buffer,
-  # the application writes the message contents in the buffer and calls send:  ### but get_buffer is inside send()
+  # the application writes the message contents in the buffer and calls send  ???? yet to do in this order, and take care of null
   def send_req(req):                           # void send() {
-    if not LogicalAndNotFailed('active'):      #here???  (p.12) When RDMC senses a failure, it informs the higher level using upcalls and then wedges, 
-                                               #???  accepting no further multicasts and ceasing to deliver any still in the pipeline.
-      output("client request would not be served, the system is currently inactive")
-      return                                   #???
+    if not LogicalAndNotFailed("active"):      ## ????(p.12) When RDMC senses a failure, it informs the higher level using upcalls and then wedges ????doesn't match code
+                                               #### accepting no further multicasts and ceasing to deliver any still in the pipeline. ????code looks hacky
+      output("system is inactive, client request will not be served")  ####
+      return                                   ## ???? above copied sentence does not support this code
     slot = get_buffer(len(req) if req else 0)  ##  get slot for req if available
     if slot == None: return                    ##  # (p.?)
                                                #   slot = (sent_num + 1) % window_size;  ### redundant; what if None?
     sst[my_rank].slots[slot].buf = req         ##  # (p.34) the application writes the message contents in the buffer
     sst[my_rank].slots[slot].index += 1        #   sst[my_rank].slots[slot].index++;
-    output("req for (i,k): (",my_rank, ",", sent_num + 1,")")  ### ??? what i,k?
+    output("req for (i,k): (",my_rank, ",", sent_num + 1,")")
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)  ## wrote to SSS just above, but need to multicast
     sent_num += 1                              #   sent_num++; }
   
   # (p.34) A.2.4  Receiving.  ## if there is a req msg in next slot, increment received_num and call recv
-  def receive_req():    # always {  ### made function and called in run
-    for i in range(n):  #   for i in 1 to n {  ### fixed to be 0..n-1
-                        #    // the next message from node i will arrive in this slot
+  def receive_req():             # always {  ### made function and called in run
+    for i in range(n):           #   for i in 1 to n {  ### fixed to be 0..n-1
+                                 #    // the next message from node i will arrive in this slot
       slot = (sst[my_rank].received_num[i]+1) % window_size
-                        #    slot = (sst[my_rank].received_num[i]+1)%window_size
+                                 #    slot = (sst[my_rank].received_num[i]+1)%window_size
       if sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1) // window_size + 1:
-                        #    if (sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/window_size+1) {
+                                 #    if (sst[i].slots[slot].index == (sst[my_rank].received_num[i]+1)/window_size+1) {
         write_sst(my_rank, "received_num", sst[my_rank].received_num[i]+1, i)
-                        #      ++sst[my_rank].received_num[i];
+                                 #      ++sst[my_rank].received_num[i];
         recv(M(i, sst[my_rank].received_num[i]), i,  sst[my_rank].received_num[i])
-                        #      recv(M(i, sst[my_rank].received_num[i])); }}}
+                                 #      recv(M(i, sst[my_rank].received_num[i])); }}}
 
 
   # (p.34) A.3  Atomic Multicast Delivery in the Steady State
-  # A.3.1  Receive.  ## received request msg, and add it to global message queue ???name
+  # A.3.1  Receive.  ## received request msg, update msgs and related indices, but first send null msgs if needed
   def recv(req, i, k):    # on recv(M(i,k)) {
                           #   // |= K_me(Received M(i,k))
     output("in recv: ", req, i, k)
@@ -366,15 +360,16 @@ class Node(process):
                           # }
 
   # (p.34) A.3.2  Stability and Delivery.
-  ## deliver messages received on every node??? in order of its global index  ???consecutive
+  ## deliver consecutive msgs that have been received by all nodes, in order of global index of the msgs
   def stability_delivery():                 # always {  ### made function and called in run
     stable_msg_idx = Min("global_index")    #   stable_msg_index = Min{sst[*].global_index}
           #   // |= K_me (all p in G : K p (Received all messages M(i,k) s.t. gi(M(i,k)) <= sst[my_rank].global_index))
-    sorted_keys = sorted(msgs.keys())       ##  sort because msgs must be delivered in increasing global index???
-    for g_idx in sorted_keys:               #   for (msg : msgs) {  ???? why not use list for msgs
+
+    sorted_keys = sorted(msgs.keys())       ##  sort because msgs must be delivered in increasing global index
+    for g_idx in sorted_keys:               #   for (msg : msgs) {
       if g_idx <= stable_msg_idx:           #     if (msg.global_index <= min_stable_msg_index) {  ### min_ deleted
-        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msg);  ### add global_index to see in output
-        del msgs[g_idx]                     #       msgs.remove(msg.global_index); }}  ### msg is a tuple, here d is a tuple ????what's this comment?
+        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msg);  ### add first argument, to see global_index in output
+        del msgs[g_idx]                     #       msgs.remove(msg.global_index); }}  ????### msg is a tuple, here d is a tuple ????what's this comment?
     if sorted_keys and min(sorted_keys) <= stable_msg_idx:
                                             ##  if there stored reqs are less than received reqs
                                               ### added test to not multicast unnecessarily as this is in an always
@@ -388,41 +383,40 @@ class Node(process):
   def receive(msg=('failure', r)):  # every 1 millisecond {
                                     #   post RDMA write with completion to every SST row that is not frozen  ???not done
                                     #   if (no completion polled from row r) {
-    ### receive failure of row r, simulateing polling on SST for not receving a req??? for a time period from node r
+    ### receive failure of row r, simulating polling on SST for not receiving a req??? for a time period from node r
     sst[r].freeze = True            #     sst.freeze(r);  ### not defined; added field in SSTRow to track this??? used?
                                       ### not write to other rows ???
     report_failure(r)               #     report_failure(r); }}
 
-  # (p.35) ## update the suspected field upon noticing a node failure
+  # (p.35)  ## update the suspected field upon noticing a node failure
   def report_failure(r):                      # report_failure(r) {
     output("in report_failure function")      #   // local node suspects node that owns the row r
     write_sst(my_rank, "suspected", True, r)  #   sst[my_rank].suspected[r] = true;
     write_sst(my_rank, "active", False)       ##  (p.?) ## mark the epoch as inactive
     total_failed = Count('suspected', True)   #   total_failed = Count(sst[*].suspected, true);
     if total_failed >= (n + 1)/2:             #   if (total_failed >= (num_members + 1)/2) { ### num_members=n
-      output("ERROR: derecho_partitioning_exception") #     throw derecho_partitioning_exception; }}
-      #??? why not throw
+      output("ERROR: derecho_partitioning_exception") #     throw derecho_partitioning_exception; }}      ???? why not throw
 
   def find_new_leader(r):  # find_new_leader(r) {
                            #   // returns the node that r believes to be the leader, on the basis of the current sst.
-                           #   // Notice that becasue of asynchrony in the sst update propagations, 
+                           #   // Notice that because of asynchrony in the sst update propagations, 
                            #   // callers other than r itself might be using old version's of r's suspicion set, 
-                           #   // in which cse the caller could obtain an old leader belief of r's.
+                           #   // in which case the caller could obtain an old leader belief of r's.
                            #   // This is safe because leader beliefs are monotonic (they are ascending, in rank order).
     for i in range(len(curr_view.members)):  #   for (int i = 0; i < curr_view.max_rank; ++i) {  ### max_rank replaced
       if sst[r].suspected[i]: continue       #     if (sst[r].suspected[i]) continue;
       else: return i                         #     else return i }}
 
-  # (p.35) ## update the view at the end of the current leader and ???
+  # (p.35)  ## update the current view, at the end, with the new leader
   def leader_selection():                         # always {  ### made function and called in run
-                                                  # // Wait until all non-suspected nodes comsider me to be the leader.
+                                                  # // Wait until all non-suspected nodes consider me to be the leader.
                                                   # // This implies that the new leader takes action only after
                                                   # // every healthy node has pushed final nReceived data to it.
     new_leader = find_new_leader(my_rank)         # new_leader = find_new_leader(my_rank)
     if new_leader != curr_view.leader_rank and new_leader == my_rank:
                                                   # if (new_leader != curr_view.leader_rank && new_leader == my_rank)
       # all_others_agree = True                   #   bool all_others_agree = true  ### moved into while-loop 
-      ### otherwise, if this becomes False in for-loop below, it stays False, and the while-loop never stops ??? right
+      ### otherwise, if this becomes False in for-loop below, it stays False, and the while-loop never stops ???? right?
                                                   #   // so as long as I continue to believe I will be leader
       while find_new_leader(my_rank) == my_rank:  #   while (find_new_leader(my_rank) == my_rank) {
         --receive_messages                        ##    yield to receive msgs
@@ -434,15 +428,16 @@ class Node(process):
           if not sst[my_rank].suspected[r]:       #       if (sst[my_row].suspected[r] == false)
             all_others_agree = all_others_agree and (find_new_leader(r) == my_rank)
                                                   #         all_others_agree &&= (find_new_leader(r) == my_rank) }
-            output("I am the new leader!!!")      ## ??? not here!
+            output("I'm waiting to be the new leader!")
         if all_others_agree:                      #     if (all_others_agree) {
                                                   #     // Scan sst to learn prior proposals
           curr_view.leader_rank = my_rank         #       curr_view.leader_rank = my_rank;
+          output("I am the new leader!!!")
           break                                   #       break; }}}
     else:                                         ## else:  ### added this case; assign new leader for non-leader nodes
       curr_view.leader_rank = new_leader          ##   set current view's leader to be new leader
 
-  # (p.36) ## poll field suspected in SST and multicast to all members in the group and???
+  # (p.36)  ## poll field suspected in SST and propagate the status to all members in the group
   def suspect():                                      # always {  ### made function and called in run
     for r in range(n):                                #   for (every row r and s) {
       for s in range(n):
@@ -452,14 +447,14 @@ class Node(process):
             output("I am suspected and will be removed, shutting down myself now")
             exit()                                    ##        shut down self
           if not sst[my_rank].suspected[s]:           ###     added test to not multicast repeatedly
-            write_sst(my_rank, "suspected", True, s)  #       sst[my_rank].suspected[s] = true  ### redundant ???
+            write_sst(my_rank, "suspected", True, s)  #       sst[my_rank].suspected[s] = true
                                                       #     }}
     for s in range(n):                     #   for (s=0; s < num_members; ++s) {  ### num_member=n
                                            #     // if s is newly suspected
       if sst[my_rank].suspected[s]:        #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
         # and not curr_view.failed[s]:     ###     removed 2nd conjunct to keep live when leader is killed ????
-        sst[s].freeze = True               #       freeze(s)  ### not defined; added a field
-                                           ### written to other row but shouldn't!!!???
+        sst[s].freeze = True               #       freeze(s)  ### not defined; added a field in SST; need better solution
+                                           #### written to other row but shouldn't!!!????
         output("in suspect(), freeze: ", s)
         report_failure(s)                  #       report_failure(s)
                                            #       // mark s as failed in the current view
@@ -468,8 +463,9 @@ class Node(process):
                       #       // removes predicates defined in section 1 so that no new message can be sent or delivered
                                            #       curr_view.wedge()  # not defined
         write_sst(my_rank, "wedged", True) #       sst[my_rank].wedged = true
-        ### ?? B.3 marks its SST row as wedged before pushing entire SST row to all non-failed
-        ### top-level group members. Missing 'non-failed' check?
+        #### ????why copy these here
+        #### B.3 marks its SST row as wedged before pushing entire SST row to all non-failed
+        #### top-level group members. ????Missing 'non-failed' check?
 
         if curr_view.leader_rank == my_rank and G[s] not in sst[my_rank].changes:
                            #       if (curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) {
@@ -484,16 +480,16 @@ class Node(process):
           write_sst(my_rank, "num_changes", num_changes)
                            #         sst[my_rank].num_changes++;
           write_sst(my_rank, "num_acked", num_changes)
-                           ##        update leader's (self) num_acked to num_changes??? (p.?)
+                           ##        update leader's (self) num_acked to num_changes ???? source (p.?)
                                      ### for membership execution condition to be true for leader???
                            #         // |= proposed a new membership change and wedged the current view
                            #       }}}}
                                                                   
   # (p.37) ## continue A.4.2 in second half of run()
   def terminate_epoch():          # terminate_epoch() {
-                                  #   //calculate next view membership
+                                  #   // calculate next view membership
     output("in terminate_epoch()")
-    --receive_messages            ## yeild to deliver all pending messages
+    --receive_messages            ## yield to ???deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed
                                   #   committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed;
@@ -504,10 +500,10 @@ class Node(process):
                                                #     // if node already a member, the change is to remove the node;
       if node in next_view.members:            #     if (curr_view.contains(node_id) == true) {
         next_view.remove_member(node)          #       new_view.members.remove(node_id); }  ### new_view -> next_view
-        output("Removed node/member from system: ", node)
+        output("Removed node from next_view's group: ", node)
       else:                                    #     else {
         next_view.add_member(node)             #       next_view.members.append(node_id); }} 
-        output("Added new node/member to system: ", node)
+        output("Added node to next_view's group: ", node)
 
     if leader_rank == my_rank:                     #   if (leader_rank == my_rank) {
       leader_ragged_edge_cleanup()                 #     leader_ragged_edge_cleanup();
@@ -515,15 +511,15 @@ class Node(process):
       await sst[leader_rank].ragged_edge_computed  #     when (sst[leader_rank].ragged_edge_computed == true) {
       non_leader_ragged_edge_cleanup()             #       non_leader_ragged_edge_cleanup(); }}
     curr_view = next_view                          #   curr_view = next_view;
-    reset_system(sst[my_rank], committed_count)    ##  reset the system, reinitialize SST and other fields
+    resetup(sst[my_rank], committed_count)         ##  re-setup the system, reinitialize SST and other fields
     output ('new view installed with members: ', curr_view.members)#   // |= new view installed
                                                    # }                  
 
-  # (p.37-38) ## Cleans up and trims the ragged edge due to failure, for the leader node ???trims
+  # (p.37-38)  ## clean up ragged edge??? due to failure, for the leader node, by updating 'min_latest_received'
   def leader_ragged_edge_cleanup():        # leader_ragged_edge_cleanup() {
     if LogicalOr("ragged_edge_computed"):  #   if (LogicalOr(sst[*].ragged_edge_computed) == true) {
       rank = min_with_val("ragged_edge_computed", True)
-                               #     Let rank be s.t. sst[rank].ragged_edge_computed is true ??? min
+                               #     Let rank be s.t. sst[rank].ragged_edge_computed is true ???? min missing?
                                #     // copy min_latest_received from the node that computed the ragged edge
       for i in range(len(G)):  #     for (n = 0; n < |G|; ++n) {
         write_sst(my_rank, "min_latest_received", sst[rank].min_latest_received[i], i)
@@ -538,7 +534,7 @@ class Node(process):
     write_sst(my_rank, "ragged_edge_computed", True)
     deliver_in_order()         #   deliver_in_order(); }
                                               
-  # (p.38) ## Cleans up and trims the ragged edge due to failure, for non-leader nodes ??? trim
+  # (p.38)  ## clean up ragged edge??? due to failure, for non-leader nodes, by updating 'min_latest_received'
   def non_leader_ragged_edge_cleanup():  # non_leader_ragged_edge_cleanup() {
     leader_rank = curr_view.leader_rank  #   // copy from the leader
     for i in range(len(G)):  #   for (n = 0; n < |G|; ++n) {
@@ -548,7 +544,7 @@ class Node(process):
                              #   sst[my_rank].ragged_edge_computed = true;
     deliver_in_order()       #   deliver_in_order(); }
 
-  # (p.38) ## after the ragged edge are cleaned up, the pending??? messages are delivered
+  # (p.38)  ## after clean up of ragged edge, deliver pending??? messages
   def deliver_in_order():  # deliver_in_order() {
     curr_g_idx = sst[my_rank].latest_delivered_index
                            #   curr_global_index = sst[my_rank].latest_delivered_index;
@@ -559,33 +555,32 @@ class Node(process):
       sender_rank = g_idx % len(G)          #     sender_rank = global_index % |G|;
       if sender_index <= sst[my_rank].min_latest_received[sender_rank]:
                                             #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
-        output("delivering message with global index ", g_idx, " and message ", msgs[g_idx])
-        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msgs[global_index]); }}}
+        output("delivering message with global index: ", g_idx, " and message: ", msgs[g_idx])
+        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msgs[global_index]); }}}   ????why not del from msgs and write_sst as in stability_delivery
 
   # (p.40) Next, Derecho creates a new SST instance for the new epoch and 
   # associates an RDMC session with each sender for each subgroup or shard 
   # (thus, if a subgroup has k senders, then it will have k superimposed RDMC sessions: one per sender).
   # The epoch is now considered to be active.
-  def reset_system(old_sst_row, num_changes_installed):  ## Reset system after a??? membership change in the new epoch??
+  def resetup(old_sst_row, num_changes_installed):  ## re-setup system after a??? membership change in the new epoch???
     self.G = curr_view.members                    ## new group members in current view
     self.my_rank = curr_view.members.index(self)  ## set my_rank based on the index in the new_view
     initialize()                                  ## reinitialize the system
     cur_epoch = curr_view.epoch
     send(('view_change', cur_epoch), to=others)   ## send completion of view change to all other nodes
     output("view_change message sent to all other nodes; waiting to receive the same from others")
-    await each(p in others, has=received(('view_change', _cur_epoch), from_=p)) ## wait to receive same from all others
+    await each(p in others, has=some(received(('view_change', _cur_epoch), from_=_p))) ## wait to receive same from all others
+#    await each(p in others, has=received(('view_change', cur_epoch), p)) ## wait to receive same from all others
     output("view_change message received from all other nodes; starting the epoch")
-    write_sst(my_rank, 'changes', old_sst_row.changes[num_changes_installed:])
+    write_sst(my_rank, "changes", old_sst_row.changes[num_changes_installed:])
                                                                     ## copy pending??? changes to new group's SST
-    write_sst(my_rank, 'num_installed', old_sst_row.num_installed + num_changes_installed)
+    write_sst(my_rank, "num_installed", old_sst_row.num_installed + num_changes_installed)
                                                                     ## update num_installed with new changes installed
-    write_sst(my_rank, 'num_changes', old_sst_row.num_changes)      ## copy old num_changes
-    write_sst(my_rank, 'num_committed', old_sst_row.num_committed)  ## copy old num_committed
-    write_sst(my_rank, 'num_acked', old_sst_row.num_acked)          ## copy old num_ack
-    write_sst(my_rank, 'active', True)            ## (p.40?)
+    write_sst(my_rank, "num_changes", old_sst_row.num_changes)      ## copy old num_changes
+    write_sst(my_rank, "num_committed", old_sst_row.num_committed)  ## copy old num_committed
+    write_sst(my_rank, "num_acked", old_sst_row.num_acked)          ## copy old num_ack
+    write_sst(my_rank, "active", True)            ## (p.40)
 
-  #-def is_failure_detected():
-  #-  return some(r in range(len(sst)), has= sst[my_rank].suspected[r])
 
   def deliver_upcall(global_idx, req):              ## execute request req, at decided global index
     output("in deliver_upcall(), gi: ", global_idx, " and req: ", req)    
@@ -594,7 +589,7 @@ class Node(process):
     if not some(sent(('response', _req_id, _), to=_client)):  ## if request has not been responded to before
       state, res = execute(global_idx, req, state)  ## execute request at global_idx in state
       send(('response', req_id, res), to=client)    ## send response to client
-      output("response sent to the client/sim, index: ", global_idx, "and response is ", res)
+      output("response sent to the client/sim process, index: ", global_idx, "response: ", res)
 
   def execute(global_idx, req, state):              ## execute the command in req in given state
     (_, req_id, _) = req                            ## request is of form (client, req_id, cmd)
@@ -617,7 +612,7 @@ class Sim(process):
     ## nodes; list of nodes in the system
     ## num_request; total number of requests to send
     ## test_failure; whether to test a node failure scenario
-    ## msg_size; size of the request message sent to the ??? system
+    ## msg_size; size of the client request messages
     self.metrics = {}    ## stores the metrics per request id ???
     self.num_resp = 0    ## number of responses received
 
@@ -634,10 +629,10 @@ class Sim(process):
       # External failure detector
       if test_failure and not failure_injected and tid == num_requests/2:  ## failing last node
         send(('failure', 0), to= nodes[1])  ## send index of the last node as a failed node to all nodes
-        send(('failure', len(nodes)-2), to= nodes[1])
+#        send(('failure', len(nodes)-2), to= nodes[1])
         output("Sent failure message to first node")
         failure_injected = True
-    output('done sending requests to the derecho system')
+    output('done sending all requests')
 
     while True:
       if await (len(setof(tid, received(('response', tid, res)))) == num_requests):
@@ -649,7 +644,7 @@ class Sim(process):
         for tid in range(num_requests):
           if not metrics[tid].success:
             n = random.sample(nodes,1)
-            output('sending message ', tid, ' to node: ', n)
+            output('sending message: ', tid, ' to node: ', n)
             send(('request', (self, tid, os.urandom(msg_size))), to=n)
     send('done', to=parent())
    
@@ -660,11 +655,11 @@ class Sim(process):
       cur_metric.run_end_time = time.time()
       cur_metric.success = True
       num_resp += 1
-      output("---- Received tid: ", tid, " from: ", p, " with num_resp: ", num_resp)  ## ouput response received
+      output("---- Received tid: ", tid, " from: ", p, " with num_resp: ", num_resp)  ## output response received
 
 def main():
 #   config(channel is fifo, handling is all, clock is lamport, visualize is {
-#         # colors: override message and process colors, defaults to random (to fix random?)
+#         # colors: override message and process colors, defaults to random (to fix random???)
 #         #         supports any valid CSS color value
 #         # https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
 #         # examples: Transparent, Yellow, DarkRed, rgb(255, 255 ,0),
@@ -694,7 +689,7 @@ def main():
   for _ in range(nreps):
     t1 = time.time()
 
-    nodes = sorted(list(new(Node, num= num_nodes)))  ## create Node processes  ??? order matters?
+    nodes = sorted(list(new(Node, num= num_nodes)))  ## create Node processes  ???? order matters?
     state = []                            ## history of state of the application
     for rank, node in enumerate(nodes):   ## setup Node processes
       setup(node, (nodes, rank, window_size, max_msg_size, state))
@@ -726,4 +721,8 @@ def main():
   output("AVG throughput", round(sum(throughputs)/len(throughputs), 5))
   output("FAILURES", failures)
 
-#    print('-----------------', req, slot)
+#### Use a python script to remove (1) any line containing "####",
+#### (2) rest of any line starting with "????", (3) "???", 
+#### (4) any line containing "//" but only "#" or empty space before.
+#### Note: add #### to end of "output" lines not to include 
+
