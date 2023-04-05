@@ -218,8 +218,8 @@ class Node(process):
     # max_msg_size: ## max message size, in number of bytes/chars???
     ## state: history of states of the application
     self.n, self.sst, self.sent_num, self.msgs, self.others = initialize()
-    self.curr_view = View(n)    # ## current view
-    self.curr_view.members = G  # ## members of current view, set to G
+    self.curr_view = View(n)           # ## current view
+    self.curr_view.members = G.copy()  # ## members of current view, set to G
     output('initial group: ', G)
 
   def run():
@@ -493,16 +493,16 @@ class Node(process):
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed
                                   #   committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed;
-    next_view = View(n, curr_view.epoch + 1)   ##  create a new
-    next_view.members = curr_view.members      #   next_view.members = curr_view.members
-    for change_idx in range(committed_count):  #   for (change_index=0; change_index<committed_count; change_index++){
-      node = sst[my_rank].changes[change_idx]  #      node_id = sst[my_rank].changes[change_index]; 
-                                               #     // if node already a member, the change is to remove the node;
-      if node in next_view.members:            #     if (curr_view.contains(node_id) == true) {
-        next_view.remove_member(node)          #       new_view.members.remove(node_id); }  ### new_view -> next_view
+    next_view = View(n, curr_view.epoch + 1)      ##  create a new
+    next_view.members = curr_view.members.copy()  #   next_view.members = curr_view.members
+    for change_idx in range(committed_count):     #   for (change_index=0; change_index<committed_count;change_index++){
+      node = sst[my_rank].changes[change_idx]     #      node_id = sst[my_rank].changes[change_index]; 
+                                                  #     // if node already a member, the change is to remove the node;
+      if node in next_view.members:               #     if (curr_view.contains(node_id) == true) {
+        next_view.remove_member(node)             #       new_view.members.remove(node_id); }  ### new_view -> next_view
         output("Removed node from next_view's group: ", node)
-      else:                                    #     else {
-        next_view.add_member(node)             #       next_view.members.append(node_id); }} 
+      else:                                       #     else {
+        next_view.add_member(node)                #       next_view.members.append(node_id); }} 
         output("Added node to next_view's group: ", node)
 
     if leader_rank == my_rank:                     #   if (leader_rank == my_rank) {
@@ -563,7 +563,7 @@ class Node(process):
   # (thus, if a subgroup has k senders, then it will have k superimposed RDMC sessions: one per sender).
   # The epoch is now considered to be active.
   def resetup(old_sst_row, num_changes_installed):  ## re-setup system after a??? membership change in the new epoch???
-    self.G = curr_view.members                    ## new group members in current view
+    self.G = curr_view.members.copy()             ## new group members in current view
     self.my_rank = curr_view.members.index(self)  ## set my_rank based on the index in the new_view
     initialize()                                  ## reinitialize the system
     cur_epoch = curr_view.epoch
