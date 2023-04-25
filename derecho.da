@@ -14,7 +14,7 @@
 import sys      ## for taking command line arguments
 import time     ## for timing about runs of the protocol
 import random   ## for taking a random choice among multiple actions
-import os       ## for getting a bytestring of random bytes of a given size
+import pickle   ## for serializing request object into bytes object
 
 def min_and_idx(l):
   """min of list l and index of first min element"""
@@ -112,7 +112,7 @@ class View():
   def remove_member(self, node):      ## remove node from members of the view
     index = self.members.index(node)  ## get index of node in members
     del self.failed[index]            ## remove failed entry for node
-    self.members.remove(node)         ## remove node from members
+    del self.members[index]           ## remove node from members
 
 class Node(process):
 
@@ -239,9 +239,9 @@ class Node(process):
                                                   # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
                                                   #   // |= leader proposed a new change
             and curr_view.leader_rank != my_rank):#   if (curr_view.leader_rank != my_rank) {
-        output("leader: ", G[curr_view.leader_rank], " proposed a new change")
-        output("changes list received from leader is: ", sst[my_rank].changes)  ## ???? wrong output
         leader_rank = curr_view.leader_rank       ##  ### added definition needed for uses below
+        output("leader: ", G[leader_rank], " proposed a new change")
+        output("changes list received from leader is: ", sst[leader_rank].changes)  ####
         write_sst(my_rank, "num_acked", sst[leader_rank].num_changes)
                                                   ##    acknowledge the changes;  ### missing but needed to terminate???
         write_sst(my_rank, "num_changes", sst[leader_rank].num_changes)
@@ -305,14 +305,14 @@ class Node(process):
   def send_req(req):                           # void send() {
     if not LogicalAndNotFailed("active"):      ## ????(p.12) When RDMC senses a failure, it informs the higher level using upcalls and then wedges ????doesn't match code
                                                #### accepting no further multicasts and ceasing to deliver any still in the pipeline. ????code looks hacky
-      output("system is inactive, client request will not be served")  ####
+      output("system is inactive, client request will not be served")  ###
       return                                   ## ???? above copied sentence does not support this code
-    slot = get_buffer(len(req) if req else 0)  ##  get slot for req if available
+    slot = get_buffer(len(pickle.dumps(req)) if req else 0)  ##  get slot for req if available
     if slot == None: return                    ##  # (p.?)
                                                #   slot = (sent_num + 1) % window_size;  ### redundant; what if None?
     sst[my_rank].slots[slot].buf = req         ##  # (p.34) the application writes the message contents in the buffer
     sst[my_rank].slots[slot].index += 1        #   sst[my_rank].slots[slot].index++;
-    output("req for (i,k): (",my_rank, ",", sent_num + 1,")")
+    output("req for (i,k): (",my_rank, ",", sent_num + 1,")") ####
     write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)  ## wrote to SSS just above, but need to multicast
     sent_num += 1                              #   sent_num++; }
   
@@ -334,7 +334,7 @@ class Node(process):
   # A.3.1  Receive.  ## received request msg, update msgs and related indices, but first send null msgs if needed
   def recv(req, i, k):    # on recv(M(i,k)) {
                           #   // |= K_me(Received M(i,k))
-    output("in recv: ", req, i, k)
+    output("in recv: ", req, i, k) ####
     ### the if-block below is added to avoid stalls by slow senders in delivery of received message,
     ### pseudocode as in email from Sagar Jha to Vishnu Paladugu on 11/29/19, quoting an email by him dated 7/29/18
                                           # if (I am a sender && this subgroup is not in unordered mode) {  ### ignored
@@ -390,7 +390,8 @@ class Node(process):
 
   # (p.35)  ## update the suspected field upon noticing a node failure
   def report_failure(r):                      # report_failure(r) {
-    output("in report_failure function")      #   // local node suspects node that owns the row r
+    output("in report_failure function") ####
+                                              #   // local node suspects node that owns the row r
     write_sst(my_rank, "suspected", True, r)  #   sst[my_rank].suspected[r] = true;
     write_sst(my_rank, "active", False)       ##  (p.?) ## mark the epoch as inactive
     total_failed = Count('suspected', True)   #   total_failed = Count(sst[*].suspected, true);
@@ -428,13 +429,13 @@ class Node(process):
           if not sst[my_rank].suspected[r]:       #       if (sst[my_row].suspected[r] == false)
             all_others_agree = all_others_agree and (find_new_leader(r) == my_rank)
                                                   #         all_others_agree &&= (find_new_leader(r) == my_rank) }
-            output("I'm waiting to be the new leader!")
+            # output("I'm waiting to be the new leader!") ####
         if all_others_agree:                      #     if (all_others_agree) {
                                                   #     // Scan sst to learn prior proposals
           curr_view.leader_rank = my_rank         #       curr_view.leader_rank = my_rank;
           output("I am the new leader!!!")
           break                                   #       break; }}}
-    else:                                         ## else:  ### added this case; assign new leader for non-leader nodes
+    elif new_leader != curr_view.leader_rank:     ## else:  ###  added case; assign new leader for non-leader; can be further simplified
       curr_view.leader_rank = new_leader          ##   set current view's leader to be new leader
 
   # (p.36)  ## poll field suspected in SST and propagate the status to all members in the group
@@ -455,7 +456,7 @@ class Node(process):
         # and not curr_view.failed[s]:     ###     removed 2nd conjunct to keep live when leader is killed ????
         sst[s].freeze = True               #       freeze(s)  ### not defined; added a field in SST; need better solution
                                            #### written to other row but shouldn't!!!????
-        output("in suspect(), freeze: ", s)
+        output("in suspect(), freeze: ", s) ####
         report_failure(s)                  #       report_failure(s)
                                            #       // mark s as failed in the current view
         curr_view.failed[s] = True         #       curr_view.failed[s] = true
@@ -488,7 +489,7 @@ class Node(process):
   # (p.37) ## continue A.4.2 in second half of run()
   def terminate_epoch():          # terminate_epoch() {
                                   #   // calculate next view membership
-    output("in terminate_epoch()")
+    output("in terminate_epoch()") ####
     --receive_messages            ## yield to ???deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed
@@ -512,7 +513,8 @@ class Node(process):
       non_leader_ragged_edge_cleanup()             #       non_leader_ragged_edge_cleanup(); }}
     curr_view = next_view                          #   curr_view = next_view;
     resetup(sst[my_rank], committed_count)         ##  re-setup the system, reinitialize SST and other fields
-    output ('new view installed with members: ', curr_view.members)#   // |= new view installed
+    output ('new view installed with members: ', curr_view.members)
+                                                    #   // |= new view installed
                                                    # }                  
 
   # (p.37-38)  ## clean up ragged edge??? due to failure, for the leader node, by updating 'min_latest_received'
@@ -536,7 +538,8 @@ class Node(process):
                                               
   # (p.38)  ## clean up ragged edge??? due to failure, for non-leader nodes, by updating 'min_latest_received'
   def non_leader_ragged_edge_cleanup():  # non_leader_ragged_edge_cleanup() {
-    leader_rank = curr_view.leader_rank  #   // copy from the leader
+    leader_rank = curr_view.leader_rank  
+                                        #   // copy from the leader
     for i in range(len(G)):  #   for (n = 0; n < |G|; ++n) {
       write_sst(my_rank, "min_latest_received", sst[leader_rank].min_latest_received[i], i)
                              #     sst[my_rank].min_latest_received[n] = sst[leader_rank].min_latest_received[n]; }
@@ -551,7 +554,7 @@ class Node(process):
     max_g_idx = max_gi()   #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] * |G| + n);
     for g_idx in range(curr_g_idx + 1, max_g_idx + 1):
                      #   for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
-      sender_index = g_idx / len(G)         #     sender_index = global_index / |G|;
+      sender_index = g_idx // len(G)         #     sender_index = global_index / |G|;
       sender_rank = g_idx % len(G)          #     sender_rank = global_index % |G|;
       if sender_index <= sst[my_rank].min_latest_received[sender_rank]:
                                             #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
@@ -570,7 +573,6 @@ class Node(process):
     send(('view_change', cur_epoch), to=others)   ## send completion of view change to all other nodes
     output("view_change message sent to all other nodes; waiting to receive the same from others")
     await each(p in others, has=some(received(('view_change', _cur_epoch), from_=_p))) ## wait to receive same from all others
-#    await each(p in others, has=received(('view_change', cur_epoch), p)) ## wait to receive same from all others
     output("view_change message received from all other nodes; starting the epoch")
     write_sst(my_rank, "changes", old_sst_row.changes[num_changes_installed:])
                                                                     ## copy pending??? changes to new group's SST
@@ -608,11 +610,10 @@ class RequestMetrics:
 
 class Sim(process):
   """simulator for failure injection and client requests"""
-  def setup(nodes, num_requests, test_failure, msg_size):
+  def setup(nodes, num_requests, test_failure):
     ## nodes; list of nodes in the system
     ## num_request; total number of requests to send
     ## test_failure; whether to test a node failure scenario
-    ## msg_size; size of the client request messages
     self.metrics = {}    ## stores the metrics per request id ???
     self.num_resp = 0    ## number of responses received
 
@@ -623,14 +624,15 @@ class Sim(process):
       metrics[tid] = RequestMetrics(time.clock(), time.time())
       node = random.sample(nodes,1)          ## randomly select a node to send the request
       output("sent request: ", tid, " to node: ", node)
-      send(('request', (self, tid, os.urandom(msg_size))), to=node)
+      send(('request', (self, tid, "sample")), to=node)
 
       # Uncomment to use sim as an external failure detector
       # External failure detector
       if test_failure and not failure_injected and tid == num_requests/2:  ## failing last node
         send(('failure', 0), to= nodes[1])  ## send index of the last node as a failed node to all nodes
-#        send(('failure', len(nodes)-2), to= nodes[1])
+        # send(('failure', len(nodes)-2), to= nodes[1])
         output("Sent failure message to first node")
+        nodes.remove(nodes[0])
         failure_injected = True
     output('done sending all requests')
 
@@ -639,13 +641,14 @@ class Sim(process):
         output("---- ---- all responded")
         send(('metrics', list(metrics.values())), to= parent())
         break 
-      elif timeout(5):
+      elif timeout(10):
         output("---- ---- timeout!!!")
+        --receive_messages
         for tid in range(num_requests):
           if not metrics[tid].success:
             n = random.sample(nodes,1)
             output('sending message: ', tid, ' to node: ', n)
-            send(('request', (self, tid, os.urandom(msg_size))), to=n)
+            send(('request', (self, tid, "sample")), to=n)
     send('done', to=parent())
    
   def receive(msg= ('response', tid, res), from_= p):
@@ -677,13 +680,13 @@ def main():
 #     })
   config(channel is fifo, clock is lamport, handling = 'all')
 
-  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5      ## number of nodes in the system
+  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5      ## number of nodes in the group
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10  ## number of requests from applications
-  nreps = int(sys.argv[3]) if len(sys.argv) > 3 else 1          ## number of repetitions, for calculating metrics
-  msg_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1       ## size of request messages
-  window_size = 5                                               ## window size for vector of slots, should be small???
-  max_msg_size = 10                                             ## max message size, in number of bytes/chars???
-  test_failure = False                                          ## whether to test a failure scenario
+  num_clients = int(sys.argv[3]) if len(sys.argv) > 3 else 1    ## number of simulated clients ### configure test_failure to false if > 1
+  nreps = int(sys.argv[4]) if len(sys.argv) > 4 else 1          ## number of repetitions, for calculating metrics
+  window_size = int(sys.argv[5]) if len(sys.argv) > 5 else 10   ## window size for vector of slots ??? should be small; for testing purposes
+  max_msg_size = 1000                                           ## max message size, in number of bytes
+  test_failure = True                                           ## whether to test a failure scenario
 
   throughputs = []
   for _ in range(nreps):
@@ -694,9 +697,10 @@ def main():
     for rank, node in enumerate(nodes):   ## setup Node processes
       setup(node, (nodes, rank, window_size, max_msg_size, state))
     start(nodes)
-    sim = new(Sim, (nodes, num_requests, test_failure, msg_size))  ## create and set up Sim process
+    sim = new(Sim, num= num_clients)                            ## create and set up Sim process
+    setup(sim, (nodes, num_requests, test_failure))
     start(sim)
-    await(received(('done'), from_=sim))  ## wait to receive 'done' from sim
+    await(each(s in sim, has=some(received(('done'), from_=_s)))) ## wait to receive 'done' from sim
 
     throughputs.append((time.time() - t1)/num_requests)
     print("--------- time:", time.time() - t1)
