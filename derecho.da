@@ -75,13 +75,13 @@ class SSTRow:
   def __init__(self, n, window_size):  ## initialize SST columns for the row; all used in pseudocode but the last two 
     # n:           ## number of member nodes in the group
     # window_size: ## length of vector of slots for storing client req msgs received by the node, directly or indirectly
-    self.slots = [Slot() for _ in range(window_size)]  # (p.33) vector of window_size slots ## for client request msgs
-    self.received_num = [-1] * n                       # (p.33) number of messages received from each node  ### num-1
-                                                         ## initialized in Node.init(), and set in receive_req()
+    self.slots = [Slot() for _ in range(window_size)] # (p.33) vector of window_size slots ## for client request msgs
+    self.received_num = [-1] * n                      # (p.33) number of messages received from each node  ### num-1
+                                                      ## initialized in Node.init(), and set in receive_req()
     self.global_index = -1                 # ## global index of last message received from the most lagging node
     self.latest_delivered_index = -1       # ## min of self.global_index over all members
     self.latest_received_index = [-1] * n  # ## index of latest msg received from each node, set in recv to received_num
-                                             ## i.e., self.received_num-1  ### redundant ???but not clear with null msgs
+                                             ## i.e., self.received_num-1  ### maybe redundant, same value as received_num?
     self.min_latest_received = [-1] * n    # ## for each node, min of latest_received_index over all rows in SST
     self.suspected = [False] * n           # ## for each node, whether that node is suspected to have failed
     self.wedged = False     # ## true when any node is suspected ???or terminating a view, due to failures or joins
@@ -93,8 +93,8 @@ class SSTRow:
     self.num_installed = 0  # ## number of nodes installed (added/removed) by the node, as proposed by the leader
     self.ragged_edge_computed = False  # ## true for leader calling terminate_epoch or others after leader did;
                                          ## the call happens when leader's num_committed > self's num_installed
-    self.freeze = False  ##??? whether the node is frozen for updates, suspected by some??? node ### is a call in pseudocode
-    self.active = False  # (p.40) ##??? whether the epoch is active, ### not in pseudocode
+    self.freeze = False  # (p.16) ## true when the node is suspected and thus corresponding row cannot be updated
+    self.active = False  # (p.40) ## true when current epoch is active to process messages/request
 
 class View(): 
   """A view that holds the information of an epoch. An epoch is the duration of a view."""
@@ -128,13 +128,13 @@ class Node(process):
   def receive(msg = (_, 'rdma_write_sst', row, col, val, index, epoch)):  ## _ ignores tag 'data' or 'control'
     output("received: ", ('rdma_write_sst', row, col, val, index, epoch))
     #### ????all besides last line are hacks (and missing sources) and shouldn't be here (right place depends on source)
-    if epoch != curr_view.epoch:                  # (p.?) ## if msg is for a different epoch, ignore
+    if epoch != curr_view.epoch:                  # (p.40) ## if msg is for a different epoch, ignore
       output('received rdma_write_sst msg for different epoch, current: ', curr_view.epoch, ' and msg: ', epoch)
       return
-    if col == "slots" and any(curr_view.failed):  # (p.?) ## if msg is a req and curr view has failed members, ignore
+    if col == "slots" and any(curr_view.failed):  # (p.12) ## if msg is a req and curr view has failed members, ignore
       output("Failure detected, new data messages dropped")
       return
-    if sst[row].freeze:                           # (p.?) ## if msg is for a row frozen for updates, ignore
+    if sst[row].freeze:                           # (p.16) ## if msg is for a row frozen for updates, ignore
       output("ignored rdma_write_sst msg because of frozen row: ", row, " node: ", G[row])
       return
     wt_local_sst(row, col, val, index)            ## write local SST
@@ -174,7 +174,8 @@ class Node(process):
 
   def Count(col, val):  # (p.32) Count(sst_column, value) counts the number of entries that are equal to value.
     """count of rows in sst where column col has value val"""
-    return len([row for row in range(len(sst)) if getattr(sst[row], col) == val])
+    return len([i for i in range(len(sst)) if getattr(sst[my_rank], col)[i] == val])
+    # return len([row for row in range(len(sst)) if getattr(sst[row], col) == val])
 
   def min_with_val(col, val):
     """min rank of row in sst where column col has value val"""
@@ -215,7 +216,7 @@ class Node(process):
     # G:            ## list of nodes in the group ????list order needed?
     # my_rank:      ## index of this node in the list of nodes
     # window_size:  ## size of the vector of slots for SST
-    # max_msg_size: ## max message size, in number of bytes/chars???
+    # max_msg_size: ## max message size, in number of bytes
     ## state: history of states of the application
     self.n, self.sst, self.sent_num, self.msgs, self.others = initialize()
     self.curr_view = View(n)           # ## current view
@@ -223,8 +224,8 @@ class Node(process):
     output('initial group: ', G)
 
   def run():
-    write_sst(my_rank, "active", True)    # (p.?) ## mark the epoch??? as active ????should be in setup/init then
-    await(LogicalAndNotFailed("active"))  # (p.?) ## wait for the ???system to be active
+    write_sst(my_rank, "active", True)    # (p.40) ## mark the epoch??? as active ????should be in setup/init then
+    await(LogicalAndNotFailed("active"))  # (p.40) ## wait for the ???system to be active
 
     while True:
       --receive_messages  ## yield to receive messages
@@ -293,7 +294,8 @@ class Node(process):
     if sent_num - completed_num >= window_size:   #   if (sent_num - completed_num < window_size) { 
       ### changed < to > in ERRATA of paper  ### changed to >= to avoid deadlock
       #### e.g., window_size 10, sent_num 10 (11 sent), completed_num 0 (1 completed), 
-      #### then slot below is 1, and data in slot[1] would be overwritten, and thus system??? reaching a deadlock???
+      #### then slot below is 1, and data in slot[1] would be overwritten, and 
+      #### thus system reaches a deadlock in receive_req if condition
       output("slot verctor full, returning, sent_num: ", sent_num, " completed_num: ", completed_num)
       return None                                 #     return nullptr; }
     slot = (sent_num + 1) % window_size           #   slot = (sent_num + 1) % window_size;
@@ -339,8 +341,8 @@ class Node(process):
     ### pseudocode as in email from Sagar Jha to Vishnu Paladugu on 11/29/19, quoting an email by him dated 7/29/18
                                           # if (I am a sender && this subgroup is not in unordered mode) {  ### ignored
     if my_rank < i and k > sent_num:      #   if (my_rank < i && I have not sent M(my_rank, k)) {  ### used sent_num
-      for _ in range(k - sent_num):       ##  for every missing msg:  ### do all at once to be more efficient
-        output("sending no-op, case 1")
+      for _ in range(k - sent_num):       ##  for every missing msg: ### do all at once to be more efficient
+        output("sending no-op, case 1")   ### https://github.com/Derecho-Project/derecho/blob/ceb4c599658630de84cbc6b94b2ddc844449bc58/src/core/multicast_group.cpp#L336
         send_req(None)                    #     send a null message }
     elif my_rank > i and k-1 > sent_num:  # else if (my_rank > i && I have not sent M(my_rank, k-1)) { ### used sent_num
       for _ in range(k-1 - sent_num):     ##  for every missing msg:  ### do all at once to be more efficient
@@ -369,10 +371,10 @@ class Node(process):
     for g_idx in sorted_keys:               #   for (msg : msgs) {
       if g_idx <= stable_msg_idx:           #     if (msg.global_index <= min_stable_msg_index) {  ### min_ deleted
         deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msg);  ### add first argument, to see global_index in output
-        del msgs[g_idx]                     #       msgs.remove(msg.global_index); }}  ????### msg is a tuple, here d is a tuple ????what's this comment?
+        del msgs[g_idx]                     #       msgs.remove(msg.global_index); }}
     if sorted_keys and min(sorted_keys) <= stable_msg_idx:
                                             ##  if there stored reqs are less than received reqs
-                                              ### added test to not multicast unnecessarily as this is in an always
+                                            ###   added test to not multicast unnecessarily as this is in an always
       write_sst(my_rank, "latest_delivered_index", stable_msg_idx)
                                             #   sst[my_rank].latest_delivered_index = stable_msg_index }
                                             # // |= K_me (Delivered all messages <= sst[my_rank].latest_delivered_index)
@@ -385,7 +387,7 @@ class Node(process):
                                     #   if (no completion polled from row r) {
     ### receive failure of row r, simulating polling on SST for not receiving a req??? for a time period from node r
     sst[r].freeze = True            #     sst.freeze(r);  ### not defined; added field in SSTRow to track this??? used?
-                                      ### not write to other rows ???
+                                    ### not write to other rows ???
     report_failure(r)               #     report_failure(r); }}
 
   # (p.35)  ## update the suspected field upon noticing a node failure
@@ -393,10 +395,13 @@ class Node(process):
     output("in report_failure function") ####
                                               #   // local node suspects node that owns the row r
     write_sst(my_rank, "suspected", True, r)  #   sst[my_rank].suspected[r] = true;
-    write_sst(my_rank, "active", False)       ##  (p.?) ## mark the epoch as inactive
+    write_sst(my_rank, "active", False)       #  (p.40) ## mark the epoch as inactive
     total_failed = Count('suspected', True)   #   total_failed = Count(sst[*].suspected, true);
-    if total_failed >= (n + 1)/2:             #   if (total_failed >= (num_members + 1)/2) { ### num_members=n
-      output("ERROR: derecho_partitioning_exception") #     throw derecho_partitioning_exception; }}      ???? why not throw
+                                              ### changed above to: total_failed = Count(sst[my_rank].suspected, true);
+                                              ### https://github.com/Derecho-Project/derecho/blob/ceb4c599658630de84cbc6b94b2ddc844449bc58/src/core/view_manager.cpp#L2446
+    if total_failed >= (n + 1)//2:            #   if (total_failed >= (num_members + 1)/2) { ### num_members=n
+      output("ERROR: derecho_partitioning_exception")
+      raise Exception("ERROR: derecho_partitioning_exception")  #     throw derecho_partitioning_exception; }}      ???? why not throw
 
   def find_new_leader(r):  # find_new_leader(r) {
                            #   // returns the node that r believes to be the leader, on the basis of the current sst.
@@ -417,7 +422,7 @@ class Node(process):
     if new_leader != curr_view.leader_rank and new_leader == my_rank:
                                                   # if (new_leader != curr_view.leader_rank && new_leader == my_rank)
       # all_others_agree = True                   #   bool all_others_agree = true  ### moved into while-loop 
-      ### otherwise, if this becomes False in for-loop below, it stays False, and the while-loop never stops ???? right?
+      ### otherwise, if this becomes False in for-loop below, it stays False, and the while-loop never exits
                                                   #   // so as long as I continue to believe I will be leader
       while find_new_leader(my_rank) == my_rank:  #   while (find_new_leader(my_rank) == my_rank) {
         --receive_messages                        ##    yield to receive msgs
@@ -453,7 +458,8 @@ class Node(process):
     for s in range(n):                     #   for (s=0; s < num_members; ++s) {  ### num_member=n
                                            #     // if s is newly suspected
       if sst[my_rank].suspected[s]:        #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
-        # and not curr_view.failed[s]:     ###     removed 2nd conjunct to keep live when leader is killed ????
+        # and not curr_view.failed[s]:     ###     removed 2nd conjunct to avoid deadlock when leader fails and new leader 
+                                           ###     in line runs the following code before running leader selection
         sst[s].freeze = True               #       freeze(s)  ### not defined; added a field in SST; need better solution
                                            #### written to other row but shouldn't!!!????
         output("in suspect(), freeze: ", s) ####
@@ -464,10 +470,6 @@ class Node(process):
                       #       // removes predicates defined in section 1 so that no new message can be sent or delivered
                                            #       curr_view.wedge()  # not defined
         write_sst(my_rank, "wedged", True) #       sst[my_rank].wedged = true
-        #### ????why copy these here
-        #### B.3 marks its SST row as wedged before pushing entire SST row to all non-failed
-        #### top-level group members. ????Missing 'non-failed' check?
-
         if curr_view.leader_rank == my_rank and G[s] not in sst[my_rank].changes:
                            #       if (curr_view.leader_rank == my_rank and sst[my_rank].changes.contains(s) == false) {
           output("changes list updated with: ", G[s])
@@ -506,16 +508,16 @@ class Node(process):
         next_view.add_member(node)                #       next_view.members.append(node_id); }} 
         output("Added node to next_view's group: ", node)
 
-    if leader_rank == my_rank:                     #   if (leader_rank == my_rank) {
-      leader_ragged_edge_cleanup()                 #     leader_ragged_edge_cleanup();
-    else:                                          #   else {
-      await sst[leader_rank].ragged_edge_computed  #     when (sst[leader_rank].ragged_edge_computed == true) {
-      non_leader_ragged_edge_cleanup()             #       non_leader_ragged_edge_cleanup(); }}
-    curr_view = next_view                          #   curr_view = next_view;
-    resetup(sst[my_rank], committed_count)         ##  re-setup the system, reinitialize SST and other fields
+    if leader_rank == my_rank:                    #   if (leader_rank == my_rank) {
+      leader_ragged_edge_cleanup()                #     leader_ragged_edge_cleanup();
+    else:                                         #   else {
+      await sst[leader_rank].ragged_edge_computed #     when (sst[leader_rank].ragged_edge_computed == true) {
+      non_leader_ragged_edge_cleanup()            #       non_leader_ragged_edge_cleanup(); }}
+    curr_view = next_view                         #   curr_view = next_view;
+    resetup(sst[my_rank], committed_count)        ##  re-setup the system, reinitialize SST and other fields
     output ('new view installed with members: ', curr_view.members)
-                                                    #   // |= new view installed
-                                                   # }                  
+                                                  #   // |= new view installed
+                                                  # }                  
 
   # (p.37-38)  ## clean up ragged edge??? due to failure, for the leader node, by updating 'min_latest_received'
   def leader_ragged_edge_cleanup():        # leader_ragged_edge_cleanup() {
@@ -554,7 +556,7 @@ class Node(process):
     max_g_idx = max_gi()   #   max_global_index = max over n of (sst[my_rank].min_latest_received[n] * |G| + n);
     for g_idx in range(curr_g_idx + 1, max_g_idx + 1):
                      #   for (global_index = curr_global_index + 1; global_index <= max_global_index; ++global_index) {
-      sender_index = g_idx // len(G)         #     sender_index = global_index / |G|;
+      sender_index = g_idx // len(G)        #     sender_index = global_index / |G|;
       sender_rank = g_idx % len(G)          #     sender_rank = global_index % |G|;
       if sender_index <= sst[my_rank].min_latest_received[sender_rank]:
                                             #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
@@ -565,7 +567,7 @@ class Node(process):
   # associates an RDMC session with each sender for each subgroup or shard 
   # (thus, if a subgroup has k senders, then it will have k superimposed RDMC sessions: one per sender).
   # The epoch is now considered to be active.
-  def resetup(old_sst_row, num_changes_installed):  ## re-setup system after a??? membership change in the new epoch???
+  def resetup(old_sst_row, num_changes_installed):## re-setup system after the changes are installed during ongoing membership change
     self.G = curr_view.members.copy()             ## new group members in current view
     self.my_rank = curr_view.members.index(self)  ## set my_rank based on the index in the new_view
     initialize()                                  ## reinitialize the system
@@ -575,7 +577,7 @@ class Node(process):
     await each(p in others, has=some(received(('view_change', _cur_epoch), from_=_p))) ## wait to receive same from all others
     output("view_change message received from all other nodes; starting the epoch")
     write_sst(my_rank, "changes", old_sst_row.changes[num_changes_installed:])
-                                                                    ## copy pending??? changes to new group's SST
+                                                                    ## copy uninstalled changes(pending) to new group's SST
     write_sst(my_rank, "num_installed", old_sst_row.num_installed + num_changes_installed)
                                                                     ## update num_installed with new changes installed
     write_sst(my_rank, "num_changes", old_sst_row.num_changes)      ## copy old num_changes
@@ -622,7 +624,7 @@ class Sim(process):
 
     for tid in range(num_requests):
       metrics[tid] = RequestMetrics(time.clock(), time.time())
-      node = random.sample(nodes,1)          ## randomly select a node to send the request
+      node = random.sample(nodes,1)         ## randomly select a node to send the request
       output("sent request: ", tid, " to node: ", node)
       send(('request', (self, tid, "sample")), to=node)
 
@@ -680,11 +682,11 @@ def main():
 #     })
   config(channel is fifo, clock is lamport, handling = 'all')
 
-  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5      ## number of nodes in the group
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10  ## number of requests from applications
+  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3      ## number of nodes in the group
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 100 ## number of requests from applications
   num_clients = int(sys.argv[3]) if len(sys.argv) > 3 else 1    ## number of simulated clients ### configure test_failure to false if > 1
   nreps = int(sys.argv[4]) if len(sys.argv) > 4 else 1          ## number of repetitions, for calculating metrics
-  window_size = int(sys.argv[5]) if len(sys.argv) > 5 else 10   ## window size for vector of slots ??? should be small; for testing purposes
+  window_size = int(sys.argv[5]) if len(sys.argv) > 5 else 1000 ## window size for vector of slots ??? should be small; for testing purposes
   max_msg_size = 1000                                           ## max message size, in number of bytes
   test_failure = True                                           ## whether to test a failure scenario
 
