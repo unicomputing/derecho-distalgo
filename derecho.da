@@ -305,10 +305,6 @@ class Node(process):
   # (p.34) After get_buffer returns a non-null buffer,
   # the application writes the message contents in the buffer and calls send  ???? yet to do in this order, and take care of null
   def send_req(req):                           # void send() {
-    if not LogicalAndNotFailed("active"):      ## ????(p.12) When RDMC senses a failure, it informs the higher level using upcalls and then wedges ????doesn't match code
-                                               #### accepting no further multicasts and ceasing to deliver any still in the pipeline. ????code looks hacky
-      output("system is inactive, client request will not be served")  ###
-      return                                   ## ???? above copied sentence does not support this code
     slot = get_buffer(len(pickle.dumps(req)) if req else 0)  ##  get slot for req if available
     if slot == None: return                    ##  # (p.?)
                                                #   slot = (sent_num + 1) % window_size;  ### redundant; what if None?
