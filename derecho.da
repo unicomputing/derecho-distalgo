@@ -81,15 +81,16 @@ class SSTRow:
     self.global_index = -1                 # ## global index of last message received from the most lagging node
     self.latest_delivered_index = -1       # ## min of self.global_index over all members
     self.latest_received_index = [-1] * n  # ## index of latest msg received from each node, set in recv to received_num
-                                             ## i.e., self.received_num-1  ### maybe redundant, same value as received_num?
+                                             ## i.e., self.received_num-1  ### maybe redundant, same value as received_num
     self.min_latest_received = [-1] * n    # ## for each node, min of latest_received_index over all rows in SST
     self.suspected = [False] * n           # ## for each node, whether that node is suspected to have failed
     self.wedged = False     # ## true when any node is suspected ???or terminating a view, due to failures or joins
     self.changes = []       # ## list of nodes suspected (or added from joins) to proposed as changes by the leader
     self.num_changes = 0    # ## number of nodes in self.changes, i.e., length of self.changes
-    self.num_acked = 0      # ## number of nodes in self.changes acknowledged??? by the node  ### used but never defined 
+    self.num_acked = 0      # ## How many proposed changes have been seen. 
+                              ### number of proposed changes(nodes) in self.changes acknowledged by the node  ### used but never defined 
                               ### currently set in 2 places by us, both using num_changes???
-    self.num_committed = 0  # ## min of self.num_acked??? over not suspected nodes
+    self.num_committed = 0  # How many proposed view changes have reached the commit point ## min of self.num_acked over non suspected nodes
     self.num_installed = 0  # ## number of nodes installed (added/removed) by the node, as proposed by the leader
     self.ragged_edge_computed = False  # ## true for leader calling terminate_epoch or others after leader did;
                                          ## the call happens when leader's num_committed > self's num_installed
@@ -207,7 +208,7 @@ class Node(process):
                         #     sst[i].slots[k].index = 0 }}
                         # // helper variable
     self.sent_num = -1  # sent_num = -1  ## number of messages sent by this node - 1
-    self.msgs = {}      # ## dict of requests received but not yet executed, indexed by global index ????why not list?
+    self.msgs = {}      # ## dict of requests received but not yet executed, indexed by global index
     self.others = set(G)-{self}  ## set of other nodes in the group
     return n, sst, sent_num, msgs, others
 
@@ -270,7 +271,7 @@ class Node(process):
                                               #   // |= leader committed a new membership change
         output("leader: ",  G[curr_view.leader_rank], " committed a new membership change")
                                               #   curr_view.wedge();  ### not defined
-        write_sst(my_rank, "wedged", True)    #   sst[my_rank].wedged = true;  ????### why wedge here? the system??? is already wedged!
+        write_sst(my_rank, "wedged", True)    #   sst[my_rank].wedged = true;
         await(LogicalAndNotFailed("wedged"))  #   when (LogicalAndNotFailed(sst[*].wedged) == true) {
                                               #     // |= K U\F (current view is wedged)
         terminate_epoch()                     #     terminate_epoch(); }}
@@ -306,7 +307,7 @@ class Node(process):
   # the application writes the message contents in the buffer and calls send  ???? yet to do in this order, and take care of null
   def send_req(req):                           # void send() {
     slot = get_buffer(len(pickle.dumps(req)) if req else 0)  ##  get slot for req if available
-    if slot == None: return                    ##  # (p.?)
+    if slot == None: return                    ##  # (p.34)
                                                #   slot = (sent_num + 1) % window_size;  ### redundant; what if None?
     sst[my_rank].slots[slot].buf = req         ##  # (p.34) the application writes the message contents in the buffer
     sst[my_rank].slots[slot].index += 1        #   sst[my_rank].slots[slot].index++;
@@ -381,7 +382,7 @@ class Node(process):
   def receive(msg=('failure', r)):  # every 1 millisecond {
                                     #   post RDMA write with completion to every SST row that is not frozen  ???not done
                                     #   if (no completion polled from row r) {
-    ### receive failure of row r, simulating polling on SST for not receiving a req??? for a time period from node r
+    ### receive failure of row r, simulating polling on SST for not receiving a completion record for a time period from node r
     sst[r].freeze = True            #     sst.freeze(r);  ### not defined; added field in SSTRow to track this??? used?
                                     ### not write to other rows ???
     report_failure(r)               #     report_failure(r); }}
@@ -397,7 +398,7 @@ class Node(process):
                                               ### https://github.com/Derecho-Project/derecho/blob/ceb4c599658630de84cbc6b94b2ddc844449bc58/src/core/view_manager.cpp#L2446
     if total_failed >= (n + 1)//2:            #   if (total_failed >= (num_members + 1)/2) { ### num_members=n
       output("ERROR: derecho_partitioning_exception")
-      raise Exception("ERROR: derecho_partitioning_exception")  #     throw derecho_partitioning_exception; }}      ???? why not throw
+      raise Exception("ERROR: derecho_partitioning_exception")  #     throw derecho_partitioning_exception; }}
 
   def find_new_leader(r):  # find_new_leader(r) {
                            #   // returns the node that r believes to be the leader, on the basis of the current sst.
@@ -557,7 +558,7 @@ class Node(process):
       if sender_index <= sst[my_rank].min_latest_received[sender_rank]:
                                             #     if (sender_index <= sst[my_rank].min_latest_received[sender_rank]) {
         output("delivering message with global index: ", g_idx, " and message: ", msgs[g_idx])
-        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msgs[global_index]); }}}   ????why not del from msgs and write_sst as in stability_delivery
+        deliver_upcall(g_idx, msgs[g_idx])  #       deliver_upcall(msgs[global_index]); }}}
 
   # (p.40) Next, Derecho creates a new SST instance for the new epoch and 
   # associates an RDMC session with each sender for each subgroup or shard 
@@ -690,7 +691,7 @@ def main():
   for _ in range(nreps):
     t1 = time.time()
 
-    nodes = sorted(list(new(Node, num= num_nodes)))  ## create Node processes  ???? order matters?
+    nodes = sorted(list(new(Node, num= num_nodes)))  ## create Node processes
     state = []                            ## history of state of the application
     for rank, node in enumerate(nodes):   ## setup Node processes
       setup(node, (nodes, rank, window_size, max_msg_size, state))
