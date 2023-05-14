@@ -237,26 +237,27 @@ class Node(process):
       elif choice == 'elect':   leader_selection()    # always
 
       # (p.36) A.4.2  Terminating old view and installing new view after wedging.
-      elif (sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked
+      elif sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked:
                                                   # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
                                                   #   // |= leader proposed a new change
-            and curr_view.leader_rank != my_rank):#   if (curr_view.leader_rank != my_rank) {
-        leader_rank = curr_view.leader_rank       ##  ### added definition needed for uses below
-        output("leader: ", G[leader_rank], " proposed a new change")
-        output("changes list received from leader is: ", sst[leader_rank].changes)  ####
-        write_sst(my_rank, "num_acked", sst[leader_rank].num_changes)
-                                                  ##    acknowledge the changes;  ### missing but needed to terminate???
-        write_sst(my_rank, "num_changes", sst[leader_rank].num_changes)
-                                                  #     sst[my_rank].num_changes = sst[leader_rank].num_changes;
-                                                  #     // copy entire changes vector from the leader's row
-        write_sst(my_rank, "changes", sst[leader_rank].changes)
-                                                  #     sst[my_rank].changes = sst[leader_rank].changes;
-        write_sst(my_rank, "num_committed", sst[leader_rank].num_committed)
-                                                  #     sst[my_rank].num_committed = sst[leader_rank].num_committed;
-                                                  #     curr_view.wedge();  ### not defined
-        write_sst(my_rank, "wedged", True)        #     sst[my_rank].wedged = true;
-                                                  #     // |= acknowledged leader's proposal and wedged the current view
-                                                  #   }}
+        if curr_view.leader_rank != my_rank:#   if (curr_view.leader_rank != my_rank) {
+          leader_rank = curr_view.leader_rank       ##  ### added definition needed for uses below
+          output("leader: ", G[leader_rank], " proposed a new change")
+          output("changes list received from leader is: ", sst[leader_rank].changes)  ####
+          write_sst(my_rank, "num_changes", sst[leader_rank].num_changes)
+                                                    #     sst[my_rank].num_changes = sst[leader_rank].num_changes;
+                                                    #     // copy entire changes vector from the leader's row
+          write_sst(my_rank, "changes", sst[leader_rank].changes)
+                                                    #     sst[my_rank].changes = sst[leader_rank].changes;
+          write_sst(my_rank, "num_committed", sst[leader_rank].num_committed)
+                                                    #     sst[my_rank].num_committed = sst[leader_rank].num_committed;
+                                                    #     curr_view.wedge();  ### not defined
+          write_sst(my_rank, "wedged", True)        #     sst[my_rank].wedged = true;
+                                                    #     // |= acknowledged leader's proposal and wedged the current view
+                                                    #   }}
+        write_sst(my_rank, "num_acked", sst[curr_view.leader_rank].num_changes)
+                                                  ##    acknowledge the changes;  ### missing but needed to terminate
+                                                  ### added based on cpp impl & email "Discussion with Sagar Jha on: "Understanding the Derecho's view-change algorithm""
       elif (curr_view.leader_rank == my_rank and  # when (curr_view.leader_rank == my_rank and 
             MinNotFailed("num_acked") > sst[my_rank].num_committed):
                                                   #       MinNotFailed(sst[*].num_acked) > sst[my_rank].num_committed) {
@@ -312,7 +313,7 @@ class Node(process):
     sst[my_rank].slots[slot].buf = req         ##  # (p.34) the application writes the message contents in the buffer
     sst[my_rank].slots[slot].index += 1        #   sst[my_rank].slots[slot].index++;
     output("req for (i,k): (",my_rank, ",", sent_num + 1,")") ####
-    write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)  ## wrote to SSS just above, but need to multicast
+    write_sst(my_rank, "slots", sst[my_rank].slots[slot], slot)  ## wrote to SST just above, but need to multicast
     sent_num += 1                              #   sent_num++; }
   
   # (p.34) A.2.4  Receiving.  ## if there is a req msg in next slot, increment received_num and call recv
@@ -384,7 +385,7 @@ class Node(process):
                                     #   if (no completion polled from row r) {
     ### receive failure of row r, simulating polling on SST for not receiving a completion record for a time period from node r
     sst[r].freeze = True            #     sst.freeze(r);  ### not defined; added field in SSTRow to track this??? used?
-                                    ### not write to other rows ???
+                                    ### avoid writing to frozen row
     report_failure(r)               #     report_failure(r); }}
 
   # (p.35)  ## update the suspected field upon noticing a node failure
@@ -479,9 +480,6 @@ class Node(process):
           num_changes = sst[my_rank].num_changes + 1
           write_sst(my_rank, "num_changes", num_changes)
                            #         sst[my_rank].num_changes++;
-          write_sst(my_rank, "num_acked", num_changes)
-                           ##        update leader's (self) num_acked to num_changes ???? source (p.?)
-                                     ### for membership execution condition to be true for leader???
                            #         // |= proposed a new membership change and wedged the current view
                            #       }}}}
                                                                   
@@ -489,7 +487,6 @@ class Node(process):
   def terminate_epoch():          # terminate_epoch() {
                                   #   // calculate next view membership
     output("in terminate_epoch()") ####
-    --receive_messages            ## yield to ???deliver all pending messages
     leader_rank = curr_view.leader_rank
     committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed
                                   #   committed_count = sst[leader_rank].num_committed - sst[leader_rank].num_installed;
@@ -520,7 +517,7 @@ class Node(process):
   def leader_ragged_edge_cleanup():        # leader_ragged_edge_cleanup() {
     if LogicalOr("ragged_edge_computed"):  #   if (LogicalOr(sst[*].ragged_edge_computed) == true) {
       rank = min_with_val("ragged_edge_computed", True)
-                               #     Let rank be s.t. sst[rank].ragged_edge_computed is true ???? min missing?
+                               #     Let rank be s.t. sst[rank].ragged_edge_computed is true ???? min missing? ??? no check for failed node?
                                #     // copy min_latest_received from the node that computed the ragged edge
       for i in range(len(G)):  #     for (n = 0; n < |G|; ++n) {
         write_sst(my_rank, "min_latest_received", sst[rank].min_latest_received[i], i)
@@ -677,10 +674,10 @@ def main():
 #             'rdma_write_sst': 'gray'
 #         }
 #     })
-  config(channel is fifo, clock is lamport, handling = 'all')
+  config(channel is {fifo,reliable}, clock is lamport, handling = 'all')
 
-  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 3      ## number of nodes in the group
-  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 100 ## number of requests from applications
+  num_nodes = int(sys.argv[1]) if len(sys.argv) > 1 else 5      ## number of nodes in the group
+  num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 1000 ## number of requests from applications
   num_clients = int(sys.argv[3]) if len(sys.argv) > 3 else 1    ## number of simulated clients ### configure test_failure to false if > 1
   nreps = int(sys.argv[4]) if len(sys.argv) > 4 else 1          ## number of repetitions, for calculating metrics
   window_size = int(sys.argv[5]) if len(sys.argv) > 5 else 1000 ## window size for vector of slots ??? should be small; for testing purposes
