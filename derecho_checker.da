@@ -7,8 +7,8 @@ import random
 from time import perf_counter
 
 class NodeX(process, Node):
-  def setup(checker, nodes, my_rank, window_size, state):
-    super().setup(nodes, my_rank, window_size, state)
+  def setup(checker, G, my_rank, window_size, max_msg_size, state):
+    super().setup(G, my_rank, window_size, max_msg_size, state)
     self.commit_index = 0          ## number of messages committed/executed
     self.delivery_index = 0        ## number of messages delivered/ordered
 
@@ -19,20 +19,19 @@ class NodeX(process, Node):
   def receive(msg=m, from_=fr):
     super().send(('rcvd', m, fr, logical_clock()), to=checker)
 
-  def send_msg(msg):              ## override send_msg() to send a notifcation to checker on invocation
-    super().send_msg(msg)
-    send(('send_msg', msg), to=checker)   
+  def send_req(msg):              ## override send_req() to send a message to checker on invocation
+    super().send_req(msg)
+    send(('send_req', msg), to=checker)   
     
-  def execute(index, req, state): ## override execute() to send a notifcation to checker on invocation
+  def execute(index, req, state): ## override execute() to send a message to checker on invocation
     res = super().execute(index, req, state)
-    (c_id, req_id, _) = req
-    commit_index += 1
-    send(('execute', commit_index, (c_id, req_id)), to=checker)
+    commit_index += 1             ## increment the number of requests committed count
+    send(('execute', commit_index, req), to=checker)
     return res
 
   def deliver_upcall(index, msg): ## override deliver_upcall() to send a notifcation to checker on invocation
     super().deliver_upcall(index, msg)
-    delivery_index += 1
+    delivery_index += 1           ## increment the number of requests delivered count
     send(('deliver_upcall', delivery_index, msg, logical_clock(), curr_view.epoch), to=checker)
 
 ## LB process is used as load balancer
@@ -54,7 +53,7 @@ class LB(process):
     self.max_pending_requests = len(nodes) * window_size   ## maximum number of concurrent pending requests served by the system
 
   def run():
-    failure_injected = False              ## tracks if the failure has been injected
+    failure_injected = False              ## True if the failure has been injected
 
     while True:
       if await (len(setof(tid, received(('response', tid, res)))) == num_requests): ## wait until all the responses have been received
@@ -67,11 +66,11 @@ class LB(process):
         output("---- timeout, resending " + str(num_requests - received_count) + " number of pending requests ----")
         n = -1
         for tid in range(num_requests):
-          await(timeout(round((random.random())/50, 2)))  ### room for intelligence during this computation
+          # await(timeout(round((random.random())/50, 2)))          ## wait for certain timeout before sending next request ### room for intelligence during this computation
           --receive_messages  ## yeild to deliver all pending messages
           if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
             continue
-          if is_lb:            ## if load-balancer mode ### may not work correctly since some requests may be dropped which can result in incorrect calculation of max_pending requests                              
+          if is_lb:                                                 ## if load-balancer mode ### may not work correctly since some requests may be dropped in case of failure which can result in incorrect calculation of max_pending requests                              
             await (num_pending_requests < max_pending_requests)     ## await for the number of pending requests to drop below the maximum request serving capacity of the system
             n = (n+1)%len(nodes)                                    ## in round-robin manner, select the server number to send the next request to
           else:
@@ -80,18 +79,18 @@ class LB(process):
             metrics[tid] = RequestMetrics(time.clock(), perf_counter())## add the request id to the metrics for the new request
           
           output('sending request ', tid, ' to node: ', n)
-          send(('request', (self, tid, os.urandom(msg_size))), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
+          send(('request', (self, tid, "sample_request")), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
           num_pending_requests += 1                                 ## increment the number of pending requests(non served requests) sent to the system
           
-          if test_failure and not failure_injected and (tid == num_requests/4):   ## external failure detector, sending failure detection for first and the second last node
+          if test_failure and not failure_injected and (tid == num_requests/2):   ## external failure detector, sending failure detection for first and the second last node
             await(timeout(10))
             send(('failure', 0), to= nodes[1])            ## send index of the first node/leader node as a failed node to the second node
-            # send(('failure', 2), to= nodes[3])    
+            # send(('failure', 2), to= nodes[3])          ## send index of the third node as a failed node to the fourth node ### uncomment to check multiple failures in cases num_nodes >= 5
             output("Failure messages sent to the last node")
-            nodes.remove(nodes[0])
+            nodes.remove(nodes[0])                        ## remove the failed node from the list of nodes
             max_pending_requests = len(nodes) * window_size
-            failure_injected = True                       ## set the boolean to true after the failure message has been sent to the derecho server/system
-            await(timeout(10))
+            failure_injected = True                       ## set the boolean to true after the failure message has been sent to the derecho node/system
+            # await(timeout(10))
 
   def receive(msg= ('response', tid, res)):
     if not metrics[tid].success:
@@ -113,13 +112,13 @@ class Checker(process):
     self.n_nodes = len(nodes)             ## number of active nodes in the system, initially equal to the number of initial nodes
     self.n_duplicate_requests = 0         ## number of duplicate requests, initially 0
     self.n_noops = 0                      ## number of noops, initially 0
-    self.ep_dict = {0:nodes}              ## nodes members in each epoch, initialized with epoch 0
+    self.ep_nodes = {0:nodes}             ## nodes members in each epoch, initialized with epoch 0
     self.is_processing_done = False
 
   def run():
     ## Await until every node sends a response back for every client request
     await(is_processing_done)
-    output("All responses have been sent the clients")
+    output("All responses have been sent to the clients")
     await(timeout(10))
     write_statistics()
 
@@ -169,10 +168,10 @@ class Checker(process):
   def validity():
     output("in validity()")
     start_time = perf_counter()
-    is_validity = each(received(('execute', i, (c_id, r_id))),
+    is_validity = each(received(('execute', i, req)),
                       has= some(n in nodes, 
-                                received(('rcvd', ('request', (_c_id, _r_id, _)), _, _), from_=_n), 
-                                received(('send_msg', (_c_id, _r_id, _)), from_=_n)))
+                                received(('rcvd', ('request', _req), _, _), from_=_n), 
+                                received(('send_req', _req), from_=_n)))
     end_time = perf_counter()
     output("time elapsed in computing validity: ", end_time - start_time)
     output("validity: ", is_validity)
@@ -188,12 +187,18 @@ class Checker(process):
     start_time = perf_counter()
     is_delivery_agreement = True
     for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
-      ep_nodes = ep_dict[ep]
-      output("current ep_nodes: ", ep_nodes)
-      is_delivery_agreement = is_delivery_agreement and each(i in setof(i, received(('deliver_upcall', i, _, _, _ep))),
-                              has= len(setof(n, received(('deliver_upcall', _i, _, _, _ep), from_=n))) == len(ep_nodes) and 
-                                    len(setof(r, received(('deliver_upcall', _i, r, _, _ep)))) == 1)
-      output("epoch: ", ep, "; is_delivery_agreement: ", is_delivery_agreement)
+      if  ep is not max(ep_nodes):
+        is_delivery_agreement = is_delivery_agreement and \
+              each(i in setof(i, received(('deliver_upcall', i, _, _, _ep))),
+                n in ep_nodes[ep+1],
+                has= some(received(('deliver_upcall', _i, _, _, _ep), from_=_n)) and 
+                    len(setof(r, received(('deliver_upcall', _i, r, _, _ep)))) == 1)
+      else:
+        is_delivery_agreement = is_delivery_agreement and \
+              each(i in setof(i, received(('deliver_upcall', i, _, _, _ep))),
+                n in ep_nodes[ep],
+                has= some(received(('deliver_upcall', _i, _, _, _ep), from_=_n)) and 
+                    len(setof(r, received(('deliver_upcall', _i, r, _, _ep)))) == 1)      
     end_time = perf_counter()
     output("time elapsed in computing delivery_agreement: ", end_time - start_time)
     return is_delivery_agreement
@@ -207,17 +212,16 @@ class Checker(process):
   def delivery_ordering():
     output("in delivery_ordering()")
     start_time = perf_counter()
-    is_delivery_ordering = True
+    is_delivery_ordered = True
     for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
-      is_delivery_ordering = is_delivery_ordering and \
+      is_delivery_ordered = is_delivery_ordered and \
                           each(received(('deliver_upcall', i1, _, t1, _ep), from_=n),
                               has= not some(received(('deliver_upcall', i2, _, t2, _ep), from_=_n), 
                                             has=i2>i1 and t2<t1))
-      output("is_delivery_ordering for ep:", ep, " is:", is_delivery_ordering)
     end_time = perf_counter()
     output("time elapsed in computing delivery_ordering: ", end_time - start_time)
-    output("is_delivery_ordering: ", is_delivery_ordering)
-    return is_delivery_ordering
+    output("is_delivery_ordered: ", is_delivery_ordered)
+    return is_delivery_ordered
 
   ## Return the number of duplicate requests ordered
   def duplicate_requests_count():
@@ -256,12 +260,12 @@ class Checker(process):
                                   or [-1])
       ## check if max index across nodes is consistent
       num_nodes_max_i = len(setof(n, received(('sent', ('control','rdma_write_sst', _, _tag, _max_i, _, _ep), _, _), from_=n)))
-      if ep == max(ep_dict) or len(ep_dict[ep]) < len(ep_dict[ep+1]):
-        if not num_nodes_max_i == len(ep_dict[ep]):
+      if ep == max(ep_nodes) or len(ep_nodes[ep]) < len(ep_nodes[ep+1]):
+        if not num_nodes_max_i == len(ep_nodes[ep]):
           output("", tag, " inconsistent across nodes for epoch: ", ep)
           return False
       else:
-        if not num_nodes_max_i >= len(ep_dict[ep+1]) :
+        if not num_nodes_max_i >= len(ep_nodes[ep+1]) :
           output("", tag, " inconsistent across nodes for epoch: ", ep)
           return False
       total_max_i += max_i+1
@@ -295,14 +299,17 @@ class Checker(process):
     output("received view_change message in checker with len(m): ", len(m), " and from: ", p)    
     if (len(setof(n, received(('sent', ('view_change', _, _e), _, _), from_=n))) == len(m)): ### check if all the nodes propose the same members
       mem = [x for x in next(iter(setof(m, received(('sent', ('view_change', m, _e), _, _)))))]
-      self.ep_dict[e] = mem
+      self.ep_nodes[e] = mem
+      output("current ep_nodes: ", ep_nodes)
 
-  def receive(msg= ('sent', ('response', tid, _), c, _)):
-    if each(n in ep_dict[max(ep_dict)], has=len(setof((tid, c), received(('sent', ('response', tid, _), c, _), from_=_n))) == num_requests):
+  def receive(msg= ('sent', ('response', tid, _), c, _), from_=n1):
+    # output("current msg received is: ", tid, " from: ", n1)
+    output("current nodes in max_nodes is: ", ep_nodes[max(ep_nodes.keys())])
+    if each(n in ep_nodes[max(ep_nodes.keys())], has=len(setof((tid, c), received(('sent', ('response', tid, _), c, _), from_=_n))) == num_requests):
       self.is_processing_done = True
 
 def main():
-  config(channel is fifo, clock is lamport, handling = 'all')
+  config(channel is {fifo, reliable}, clock is lamport, handling = 'all')
   system_config = read_config("system_config.txt")
 
   for conf in system_config:    
@@ -314,9 +321,8 @@ def main():
     c_timeout = conf['c_timeout']       ## c_timeout, client's timeout before retry of requests
     n_reps = conf['n_reps']             ## number of repetitions to calculate the metrics
     test_failure = conf['test_failure'] ## boolean, if a failure needs to be injected in the system
+    max_msg_size = 1000                 ## max message size, in number of bytes/
     c_reps = 0                          ## current count of the rep
-    program_run_times = []
-    program_cpu_times = []
     stats_file_name = os.path.join("statistics", time.strftime("%Y%m%d-%H%M%S") + "_" + str(num_requests) + "_" + 
                             str(num_nodes) + "_" + str(window_size) + "_" + str(test_failure)[0] + ".txt")
     f = open(stats_file_name, "w")
@@ -328,53 +334,48 @@ def main():
             "############################################\n")
     f.close()
 
+    throughputs = []
+    avg_times = 0
     while c_reps < n_reps:
       nodes = new(NodeX, num=num_nodes)
       clients = new(LB, num=num_clients)
       checker = new (Checker)
       state = []                                ## state to which clients commands are applied to
       for (rank, node) in enumerate(nodes):
-        setup(node, (checker, list(nodes), rank, window_size, state))
+        setup(node, (checker, list(nodes), rank, window_size, max_msg_size, state))
       setup(clients, (list(nodes), n_req_per_client, c_timeout, window_size, test_failure, False))
       setup(checker, (list(nodes), list(clients), stats_file_name, num_requests, test_failure))
       start(checker)
       start(clients)
       start(nodes)
       await(c_timeout)                          ## await for c_timeout before denoting the start time ### review
-      t1 = os.times()
-      await(each(c in clients, has=some(received(('done'), from_=c))))
-      t2 = os.times()
-      cpu_time =  (t2[0] + t2[1] + t2[2] + t2[3]) - (t1[0] + t1[1] + t1[2] + t1[3])
-      el_time = t2[4] - t1[4]
-      output("el_time: ", el_time)
-      output("cpu_time: ", cpu_time)
+      t11 = time.time()
+      await(each(c in clients, has=some(received(('done'), from_=_c))))
+      t22 = time.time()
+      avg_times += t22 - t11
       await(received(('done'), from_ =checker)) ## wait to receive 'done' from the checker/sim process
-      program_run_times.append(el_time)
-      program_cpu_times.append(cpu_time)
+      throughputs.append(round((num_requests)/(t22 - t11), 5))
       end(nodes)
       end(clients)
       end(checker)
       c_reps +=1
 
-    cpu_times = []
     run_times = []
     failures = 0
     for metrics in listof(metric, received(("metrics", metric))):
       for metric in metrics:
         if metric.success:
-          cpu_times.append(metric.cpu_end_time - metric.cpu_start_time)
           run_times.append(metric.run_end_time - metric.run_start_time)
         else:
           failures += 1
 
-    average_run_time = (round(sum(program_run_times)/len(program_run_times), 5))
-    average_cpu_time = (round(sum(program_cpu_times)/len(program_cpu_times), 5))
-    average_throughput_inv = (round(average_run_time/num_requests, 5))
+    avg_times = round(avg_times/n_reps, 5)
+    AVG_latency = round(sum(run_times)/len(run_times), 5)
+    AVG_throughput = round(sum(throughputs)/len(throughputs), 5)
     f = open(stats_file_name, "a")
-    f.write("AVG run_Time: " + str(average_run_time) + "\n")
-    f.write("AVG average_cpu_time: " + str(average_cpu_time) + "\n")
-    f.write("AVG latency: " + str(round(sum(run_times)/len(run_times), 5)) + "\n")
-    f.write("AVG throughput: " + str(1/average_throughput_inv) + "\n")
+    f.write("avg_times: " + str(avg_times) + "\n")
+    f.write("AVG latency: " + str(AVG_latency) + "\n")
+    f.write("AVG throughput: " + str(AVG_throughput) + "\n")
     f.write("FAILURES: " + str(failures) + "\n")
     f.close()
 
