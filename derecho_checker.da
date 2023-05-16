@@ -13,7 +13,7 @@ class NodeX(process, Node):
     self.delivery_index = 0        ## number of messages delivered/ordered
 
   def send(m, to):
-    if m[0] == 'view_change':
+    if m[0] == 'view_change':      ## send the list of members in the next membership in case of view_change
       output("sending view_change message with members: ", curr_view.members)
       super().send(('sent', (m[0], curr_view.members, m[1]), to, logical_clock()), to=checker)
     else:
@@ -119,28 +119,12 @@ class Checker(process):
     self.ep_nodes = {0:nodes}             ## nodes members in each epoch, initialized with epoch 0
     self.is_processing_done = False
 
-  def run():
-    ## Await until every node sends a response back for every client request
-    await(is_processing_done)
+  def run():    
+    await(is_processing_done)             ## Await until some node sends a response back for every client request ### changed from every node to handle cases of membership change
     output("All responses have been sent to the clients")
     await(timeout(10))
     write_statistics()
-
-    n_duplicate_requests = duplicate_requests_count()
-    n_noops = noops_count()
-    f_handle = open(stats_file_name, "a")
-    f_handle.write("************************************************\n")
-    f_handle.write("uniform_integrity: " + str(uniform_integrity()) + "\n")
-    f_handle.write("validity: " + str(validity()) + "\n")
-    f_handle.write("agreement: " + str(agreement()) + "\n")
-    f_handle.write("delivery_agreement: " + str(delivery_agreement()) + "\n")
-    f_handle.write("delivery_ordering: " + str(delivery_ordering()) + "\n")
-    f_handle.write("gi_count_tally: " + str(check_count_tally("global_index")) + "\n")
-    f_handle.write("ldi_count_tally: " + str(check_count_tally("latest_delivered_index")) + "\n")
-    f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
-    f_handle.write("noops_count: " + str(n_noops) + "\n")
-    f_handle.write("************************************************\n")
-    f_handle.close()
+    write_checking_results()
     send('done', to=parent())             ## respond with done to the parent
 
   ## If a server executes an update on seq no i, then the server does not 
@@ -299,6 +283,24 @@ class Checker(process):
     log_data("num_committed", f_handle)
     output("Done writing statistics to the file")
     f_handle.close()                                      ## close the file
+
+  ## run checking functions and write results to file
+  def write_checking_results():
+    n_duplicate_requests = duplicate_requests_count()
+    n_noops = noops_count()
+    f_handle = open(stats_file_name, "a")
+    f_handle.write("************************************************\n")
+    f_handle.write("uniform_integrity: " + str(uniform_integrity()) + "\n")
+    f_handle.write("validity: " + str(validity()) + "\n")
+    f_handle.write("agreement: " + str(agreement()) + "\n")
+    f_handle.write("delivery_agreement: " + str(delivery_agreement()) + "\n")
+    f_handle.write("delivery_ordering: " + str(delivery_ordering()) + "\n")
+    f_handle.write("gi_count_tally: " + str(check_count_tally("global_index")) + "\n")
+    f_handle.write("ldi_count_tally: " + str(check_count_tally("latest_delivered_index")) + "\n")
+    f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
+    f_handle.write("noops_count: " + str(n_noops) + "\n")
+    f_handle.write("************************************************\n")
+    f_handle.close()
 
   def log_data(data_type, f_handle):
     f_handle.write("************************************************\n")
