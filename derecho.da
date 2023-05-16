@@ -89,13 +89,13 @@ class SSTRow:
     self.num_changes = 0    # ## number of nodes in self.changes, i.e., length of self.changes
     self.num_acked = 0      # ## How many proposed changes have been seen. 
                               ### number of proposed changes(nodes) in self.changes acknowledged by the node  ### used but never defined 
-                              ### currently set in 2 places by us, both using num_changes???
+                              ### currently set in 1 places by us, using num_changes
     self.num_committed = 0  # How many proposed view changes have reached the commit point ## min of self.num_acked over non suspected nodes
     self.num_installed = 0  # ## number of nodes installed (added/removed) by the node, as proposed by the leader
     self.ragged_edge_computed = False  # ## true for leader calling terminate_epoch or others after leader did;
                                          ## the call happens when leader's num_committed > self's num_installed
-    self.freeze = False  # (p.16) ## true when the node is suspected and thus corresponding row cannot be updated
-    self.active = False  # (p.40) ## true when current epoch is active to process messages/request
+    self.freeze = False  # (p.16) ## true when the node is suspected and thus corresponding remote row has crashed ### is a call in pseudocode
+    self.active = False  # (p.40) ## true when current epoch is active to process messages/request ### not in pseudocode
 
 class View(): 
   """A view that holds the information of an epoch. An epoch is the duration of a view."""
@@ -456,7 +456,7 @@ class Node(process):
     for s in range(n):                     #   for (s=0; s < num_members; ++s) {  ### num_member=n
                                            #     // if s is newly suspected
       if sst[my_rank].suspected[s]:        #     if sst[my_rank].suspected[s] == true and curr_view.failed[s] == false {
-        # and not curr_view.failed[s]:     ###     removed 2nd conjunct to avoid deadlock when leader fails and new leader 
+        # and not curr_view.failed[s]:     ###     removed 2nd conjunct to avoid deadlock when leader fails and next leader 
                                            ###     in line runs the following code before running leader selection
         sst[s].freeze = True               #       freeze(s)  ### not defined; added a field in SST; need better solution
                                            #### written to other row but shouldn't!!!????
