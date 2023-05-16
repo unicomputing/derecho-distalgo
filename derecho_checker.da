@@ -13,7 +13,11 @@ class NodeX(process, Node):
     self.delivery_index = 0        ## number of messages delivered/ordered
 
   def send(m, to):
-    super().send(('sent', m, to, logical_clock()), to=checker)
+    if m[0] == 'view_change':
+      output("sending view_change message with members: ", curr_view.members)
+      super().send(('sent', (m[0], curr_view.members, m[1]), to, logical_clock()), to=checker)
+    else:
+      super().send(('sent', m, to, logical_clock()), to=checker)
     super().send(m, to)
 
   def receive(msg=m, from_=fr):
@@ -67,7 +71,7 @@ class LB(process):
         n = -1
         for tid in range(num_requests):
           # await(timeout(round((random.random())/50, 2)))          ## wait for certain timeout before sending next request ### room for intelligence during this computation
-          --receive_messages  ## yeild to deliver all pending messages
+          --receive_messages                                        ## yeild to deliver all pending messages
           if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
             continue
           if is_lb:                                                 ## if load-balancer mode ### may not work correctly since some requests may be dropped in case of failure which can result in incorrect calculation of max_pending requests                              
@@ -156,11 +160,14 @@ class Checker(process):
   def agreement():
     output("in agreement()")
     start_time = perf_counter()
-    is_agreement = each(i in setof(i, received(('execute', i, _))),
-                      has= len(setof(v, received(('execute', _i, v)))) == 1)
+    # is_agreement = each(i in setof(i, received(('execute', i, _))),
+    #                   has= len(setof(v, received(('execute', _i, v)))) == 1)
+    is_agreement = each(received(('execute', i, req1), from_=n1),
+                        received(('execute', i, req2), from_=n2),
+                        has=req1==req2)
     end_time = perf_counter()
-    output("agreement1: ", is_agreement)
-    output("time elapsed in computing agreement1: ", end_time - start_time)
+    output("agreement: ", is_agreement)
+    output("time elapsed in computing agreement: ", end_time - start_time)
     return is_agreement
 
   ## Only an update that was introduced by a client and subsequently 
@@ -168,10 +175,12 @@ class Checker(process):
   def validity():
     output("in validity()")
     start_time = perf_counter()
+    # is_validity = each(received(('execute', i, req)),
+    #                   has= some(n in nodes, 
+    #                             received(('rcvd', ('request', _req), _, _), from_=_n), 
+    #                             received(('send_req', _req), from_=_n)))
     is_validity = each(received(('execute', i, req)),
-                      has= some(n in nodes, 
-                                received(('rcvd', ('request', _req), _, _), from_=_n), 
-                                received(('send_req', _req), from_=_n)))
+                      has= some(received(('rcvd', ('request', _req), _, _))))
     end_time = perf_counter()
     output("time elapsed in computing validity: ", end_time - start_time)
     output("validity: ", is_validity)
@@ -214,10 +223,14 @@ class Checker(process):
     start_time = perf_counter()
     is_delivery_ordered = True
     for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      # is_delivery_ordered = is_delivery_ordered and \
+      #                     each(received(('deliver_upcall', i1, _, t1, _ep), from_=n),
+      #                         has= not some(received(('deliver_upcall', i2, _, t2, _ep), from_=_n), 
+      #                                       has=i2>i1 and t2<t1))
       is_delivery_ordered = is_delivery_ordered and \
-                          each(received(('deliver_upcall', i1, _, t1, _ep), from_=n),
-                              has= not some(received(('deliver_upcall', i2, _, t2, _ep), from_=_n), 
-                                            has=i2>i1 and t2<t1))
+                          each(received(('deliver_upcall', i1, _, t, _ep), from_=n),
+                               received(('deliver_upcall', i2, _, t2, _ep), from_=_n),
+                              has= (not i2>i1 or t2>t))
     end_time = perf_counter()
     output("time elapsed in computing delivery_ordering: ", end_time - start_time)
     output("is_delivery_ordered: ", is_delivery_ordered)
@@ -303,9 +316,7 @@ class Checker(process):
       output("current ep_nodes: ", ep_nodes)
 
   def receive(msg= ('sent', ('response', tid, _), c, _), from_=n1):
-    # output("current msg received is: ", tid, " from: ", n1)
-    output("current nodes in max_nodes is: ", ep_nodes[max(ep_nodes.keys())])
-    if each(n in ep_nodes[max(ep_nodes.keys())], has=len(setof((tid, c), received(('sent', ('response', tid, _), c, _), from_=_n))) == num_requests):
+    if some(n in ep_nodes[max(ep_nodes.keys())], has=len(setof((tid, c), received(('sent', ('response', tid, _), c, _), from_=_n))) == num_requests):
       self.is_processing_done = True
 
 def main():
