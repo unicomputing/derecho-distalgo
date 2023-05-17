@@ -240,8 +240,8 @@ class Node(process):
       elif sst[curr_view.leader_rank].num_changes > sst[my_rank].num_acked:
                                                   # when (sst[leader_rank].num_changes > sst[my_rank].num_acked) {
                                                   #   // |= leader proposed a new change
-        if curr_view.leader_rank != my_rank:      #   if (curr_view.leader_rank != my_rank) {
-          leader_rank = curr_view.leader_rank     ##    ### added definition needed for uses below
+        leader_rank = curr_view.leader_rank       ##    ### added definition needed for uses below
+        if leader_rank != my_rank:                #   if (curr_view.leader_rank != my_rank) {
           output("leader: ", G[leader_rank], " proposed a new change")
           output("changes list received from leader is: ", sst[leader_rank].changes)
           write_sst(my_rank, "num_changes", sst[leader_rank].num_changes)
@@ -623,6 +623,7 @@ class Sim(process):
         send(('failure', 0), to= nodes[1])  ## send index of the last node as a failed node to all nodes
 #        send(('failure', len(nodes)-2), to= nodes[1])
         output("Sent failure message to first node")
+        nodes.remove(nodes[0])
         failure_injected = True
     output('done sending all requests')
 
@@ -631,7 +632,7 @@ class Sim(process):
         output("---- ---- all responded")
         send(('metrics', list(metrics.values())), to= parent())
         break 
-      elif timeout(5):
+      elif timeout(10):
         output("---- ---- timeout!!!")
         for tid in range(num_requests):
           if not metrics[tid].success:
