@@ -1,0 +1,399 @@
+from derecho import Node
+from derecho import RequestMetrics
+import json
+import os
+import time
+import random
+from time import perf_counter
+
+class NodeX(process, Node):
+  def setup(checker, G, my_rank, window_size, max_msg_size, state):
+    super().setup(G, my_rank, window_size, max_msg_size, state)
+    self.commit_index = 0          ## number of messages committed/executed
+    self.delivery_index = 0        ## number of messages delivered/ordered
+
+  def send(m, to):
+    if m[0] == 'view_change':      ## send the list of members in the next membership in case of view_change
+      output("sending view_change message with members: ", curr_view.members)
+      super().send(('sent', (m[0], curr_view.members, m[1]), to, logical_clock()), to=checker)
+    else:
+      super().send(('sent', m, to, logical_clock()), to=checker)
+    super().send(m, to)
+
+  def receive(msg=m, from_=fr):
+    super().send(('rcvd', m, fr, logical_clock()), to=checker)
+
+  def send_req(msg):              ## override send_req() to send a message to checker on invocation
+    super().send_req(msg)
+    send(('send_req', msg), to=checker)   
+    
+  def execute(index, req, state): ## override execute() to send a message to checker on invocation
+    res = super().execute(index, req, state)
+    commit_index += 1             ## increment the number of requests committed count
+    send(('execute', commit_index, req), to=checker)
+    return res
+
+  def deliver_upcall(index, msg): ## override deliver_upcall() to send a notifcation to checker on invocation
+    super().deliver_upcall(index, msg)
+    delivery_index += 1           ## increment the number of requests delivered count
+    send(('deliver_upcall', delivery_index, msg, logical_clock(), curr_view.epoch), to=checker)
+
+## LB process is used as load balancer
+## The process distributes the load in a round-robin manner among all processes.
+## It keeps a count of number of pending messages/requests, and ensures the number
+## does not exceed the total number of pending/queued requests in the system.
+class LB(process):
+  def setup(nodes, num_requests, c_timeout, window_size, test_failure, is_lb):
+    ## nodes; list of nodes in the system
+    ## num_request; total number of requests to be sent
+    ## c_timeout; timeout before a request is resent
+    ## window_size; max number of pending requests per node
+    ## test_failure; whether to test a node failure scenario
+    ## is_lb; whether the client serves as a load-balancer
+    self.metrics = {}                     ## stores the metrics per request id
+    self.msg_size = 1                     ## size of the message sent to the derecho system
+    self.received_count = 0               ## number of responses received
+    self.num_pending_requests = 0         ## number of requests pending to be served
+    self.max_pending_requests = len(nodes) * window_size   ## maximum number of concurrent pending requests served by the system
+
+  def run():
+    failure_injected = False              ## True if the failure has been injected
+
+    while True:
+      if await (len(setof(tid, received(('response', tid, res)))) == num_requests): ## wait until all the responses have been received
+        output("---- all responses received ----")
+        send(('done'), to=parent())                                                 ## send done back to the parent
+        send(('metrics', list(metrics.values())), to= parent())                     ## send the metrics of the requests back to the parent
+        break
+      elif timeout(c_timeout):
+        --receive_messages                ## yeild to deliver all pending messages
+        output("---- timeout, resending " + str(num_requests - received_count) + " number of pending requests ----")
+        n = -1
+        for tid in range(num_requests):
+          # await(timeout(round((random.random())/50, 2)))          ## wait for certain timeout before sending next request ### room for intelligence during this computation
+          --receive_messages                                        ## yeild to deliver all pending messages
+          if tid in metrics and metrics[tid].success:               ## check if request has already been sent and corresponding response received
+            continue
+          if is_lb:                                                 ## if load-balancer mode ### may not work correctly since some requests may be dropped in case of failure which can result in incorrect calculation of max_pending requests                              
+            await (num_pending_requests < max_pending_requests)     ## await for the number of pending requests to drop below the maximum request serving capacity of the system
+            n = (n+1)%len(nodes)                                    ## in round-robin manner, select the server number to send the next request to
+          else:
+            n = random.randint(0, len(nodes)-1)
+          if tid not in metrics:                                    ## check if the request has not already been sent
+            metrics[tid] = RequestMetrics(time.clock(), perf_counter())## add the request id to the metrics for the new request
+          
+          output('sending request ', tid, ' to node: ', n)
+          send(('request', (self, tid, "sample_request")), to=nodes[n])## send the request to the derecho system/server in a round-robin manner
+          num_pending_requests += 1                                 ## increment the number of pending requests(non served requests) sent to the system
+          
+          if test_failure and not failure_injected and (tid == num_requests/2):   ## external failure detector, sending failure detection for first and the second last node
+            await(timeout(10))
+            send(('failure', 0), to= nodes[1])            ## send index of the first node/leader node as a failed node to the second node
+            # send(('failure', 2), to= nodes[3])          ## send index of the third node as a failed node to the fourth node ### uncomment to check multiple failures in cases num_nodes >= 5
+            output("Failure messages sent to the last node")
+            nodes.remove(nodes[0])                        ## remove the failed node from the list of nodes
+            max_pending_requests = len(nodes) * window_size
+            failure_injected = True                       ## set the boolean to true after the failure message has been sent to the derecho node/system
+            # await(timeout(10))
+
+  def receive(msg= ('response', tid, res)):
+    if not metrics[tid].success:
+      cur_metric = metrics[tid]
+      cur_metric.cpu_end_time = time.clock()
+      cur_metric.run_end_time = perf_counter()
+      cur_metric.success = True
+      received_count += 1
+      num_pending_requests -= 1
+      output("received response for tid: ", tid, " received_count: ", received_count, " num_pending_requests: ", num_pending_requests)
+
+class Checker(process):
+  def setup(nodes, clients, stats_file_name, num_requests, test_failures):
+    ## nodes; list of nodes in the system
+    ## clients; list of clients in the system
+    ## stats_file_name; name of the statistics file to dump results to
+    ## num_request; total number of requests to be sent
+    ## test_failure; whether to test a node failure scenario
+    self.n_nodes = len(nodes)             ## number of active nodes in the system, initially equal to the number of initial nodes
+    self.n_duplicate_requests = 0         ## number of duplicate requests, initially 0
+    self.n_noops = 0                      ## number of noops, initially 0
+    self.ep_nodes = {0:nodes}             ## nodes members in each epoch, initialized with epoch 0
+    self.is_processing_done = False
+
+  def run():    
+    await(is_processing_done)             ## Await until some node sends a response back for every client request ### changed from every node to handle cases of membership change
+    output("All responses have been sent to the clients")
+    await(timeout(10))
+    write_statistics()
+    write_checking_results()
+    send('done', to=parent())             ## respond with done to the parent
+
+  ## If a server executes an update on seq no i, then the server does not 
+  ## execute the update on any other seq no i' > i.
+  def uniform_integrity():
+    output("in uniform_integrity()")
+    start_time = perf_counter()
+    is_uniform_integrity = each(received(('execute', i1, v), from_=n),
+                                has= not some(received(('execute', i2, _v), from_=_n), 
+                                      has= i2>i1))
+    end_time = perf_counter()
+    output("result of is_uniform_integrity: ", is_uniform_integrity)
+    output("time elapsed in computing uniform_integrity: ", end_time - start_time)
+    return is_uniform_integrity
+
+  ## If two servers execute the ith update then these updates are identical.
+  def agreement():
+    output("in agreement()")
+    start_time = perf_counter()
+    # is_agreement = each(i in setof(i, received(('execute', i, _))),
+    #                   has= len(setof(v, received(('execute', _i, v)))) == 1)
+    is_agreement = each(received(('execute', i, req1), from_=n1),
+                        received(('execute', i, req2), from_=n2),
+                        has=req1==req2)
+    end_time = perf_counter()
+    output("agreement: ", is_agreement)
+    output("time elapsed in computing agreement: ", end_time - start_time)
+    return is_agreement
+
+  ## Only an update that was introduced by a client and subsequently 
+  ## initiated by a server may be executed.
+  def validity():
+    output("in validity()")
+    start_time = perf_counter()
+    # is_validity = each(received(('execute', i, req)),
+    #                   has= some(n in nodes, 
+    #                             received(('rcvd', ('request', _req), _, _), from_=_n), 
+    #                             received(('send_req', _req), from_=_n)))
+    is_validity = each(received(('execute', i, req)),
+                      has= some(received(('rcvd', ('request', _req), _, _))))
+    end_time = perf_counter()
+    output("time elapsed in computing validity: ", end_time - start_time)
+    output("validity: ", is_validity)
+    return is_validity
+
+  ## If a server delivers ith message using deliver_upcall() then every non-failed server will
+  ## deliver the message and these messages are identical
+  ### This follows from the atomic multicast and round-robin delivery order of Derecho
+  # Derecho delivers atomic multicasts when (1) all prior messages have been delivered and 
+  # (2) all receivers have reported receipt of a copy,
+  def delivery_agreement():
+    output("in delivery_agreement()")
+    start_time = perf_counter()
+    is_delivery_agreement = True
+    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      if  ep is not max(ep_nodes):
+        is_delivery_agreement = is_delivery_agreement and \
+              each(i in setof(i, received(('deliver_upcall', i, _, _, _ep))),
+                n in ep_nodes[ep+1],
+                has= some(received(('deliver_upcall', _i, _, _, _ep), from_=_n)) and 
+                    len(setof(r, received(('deliver_upcall', _i, r, _, _ep)))) == 1)
+      else:
+        is_delivery_agreement = is_delivery_agreement and \
+              each(i in setof(i, received(('deliver_upcall', i, _, _, _ep))),
+                n in ep_nodes[ep],
+                has= some(received(('deliver_upcall', _i, _, _, _ep), from_=_n)) and 
+                    len(setof(r, received(('deliver_upcall', _i, r, _, _ep)))) == 1)      
+    end_time = perf_counter()
+    output("time elapsed in computing delivery_agreement: ", end_time - start_time)
+    return is_delivery_agreement
+
+  # Derecho uses a simple round-robin delivery order: Each active sender
+  # can provide one multicast per delivery cycle, and the messages are 
+  # delivered in round-robin manner.
+  # The global index of M(i, k), gi(M(i, k)) is the position of this message
+  # in the round-robin ordering.
+  ## Messages are delivered in monotincally increasing order defined by its global-index
+  def delivery_ordering():
+    output("in delivery_ordering()")
+    start_time = perf_counter()
+    is_delivery_ordered = True
+    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      # is_delivery_ordered = is_delivery_ordered and \
+      #                     each(received(('deliver_upcall', i1, _, t1, _ep), from_=n),
+      #                         has= not some(received(('deliver_upcall', i2, _, t2, _ep), from_=_n), 
+      #                                       has=i2>i1 and t2<t1))
+      is_delivery_ordered = is_delivery_ordered and \
+                          each(received(('deliver_upcall', i1, _, t, _ep), from_=n),
+                               received(('deliver_upcall', i2, _, t2, _ep), from_=_n),
+                              has= (not i2>i1 or t2>t))
+    end_time = perf_counter()
+    output("time elapsed in computing delivery_ordering: ", end_time - start_time)
+    output("is_delivery_ordered: ", is_delivery_ordered)
+    return is_delivery_ordered
+
+  ## Return the number of duplicate requests ordered
+  def duplicate_requests_count():
+    output("in duplicate_requests_count()")
+    start_time = perf_counter()
+    unique_reqs = setof(req, received(('deliver_upcall', _, req, _, _)))
+    count = len(setof(i, received(('deliver_upcall', i, r, _, _)),
+                            r is not None and 
+                            r in unique_reqs)) - num_requests
+    end_time = perf_counter()
+    output("time elapsed in computing duplicate_requests_count: ", end_time - start_time)
+    output("duplicate_requests_count: ", count)
+    return count
+
+  ## Return the number of no-ops ordered
+  def noops_count():
+    output("in noops_count()")
+    start_time = perf_counter()
+    count = len(setof(i, received(('deliver_upcall', i, r, _, _)), r is None))
+    end_time = perf_counter()
+    output("time elapsed in computing noops_count: ", end_time - start_time)
+    output("noops_count: ", count)
+    return count
+
+  ## The total number of ordered messages equals the sum of 
+  ## the number of requests, number of no-ops and number of duplicate messages, i.e.,
+  ## The total number of ordered messages is given by global index.   ### Helped uncover issue in get_min_idx_recv()
+  ## Maximum latest_delivered_index equals global_index, and denotes,
+  ## total number of ordered messages.
+  def check_count_tally(tag):
+    output("in ldi_count_tally()")
+    total_max_i = 0
+    start_time = perf_counter()
+    for ep in setof(ep, received(('deliver_upcall', _, _, _, ep))):
+      max_i = max(setof(r, received(('sent', ('control','rdma_write_sst', _, _tag, r, _, _ep), _, _))) 
+                                  or [-1])
+      ## check if max index across nodes is consistent
+      num_nodes_max_i = len(setof(n, received(('sent', ('control','rdma_write_sst', _, _tag, _max_i, _, _ep), _, _), from_=n)))
+      if ep == max(ep_nodes) or len(ep_nodes[ep]) < len(ep_nodes[ep+1]):
+        if not num_nodes_max_i == len(ep_nodes[ep]):
+          output("", tag, " inconsistent across nodes for epoch: ", ep)
+          return False
+      else:
+        if not num_nodes_max_i >= len(ep_nodes[ep+1]) :
+          output("", tag, " inconsistent across nodes for epoch: ", ep)
+          return False
+      total_max_i += max_i+1
+      end_time = perf_counter()
+    output("time elapsed in computing check_count_tally with tag: ", tag, " is ", end_time - start_time)
+    output("check_count_tally with tag: ", tag, " is ", total_max_i == (num_requests + n_duplicate_requests + n_noops))
+    return total_max_i == (num_requests + n_duplicate_requests + n_noops)
+
+  ## write statistics to the file
+  def write_statistics():
+    f_handle = open(stats_file_name, "a")                 ## open file to write statistics of the run
+    output("Writing statistics to the file")
+    log_data("received_num", f_handle)
+    log_data("latest_received_index", f_handle)
+    log_data("global_index", f_handle)
+    log_data("latest_delivered_index", f_handle)
+    log_data("num_installed", f_handle)
+    log_data("num_committed", f_handle)
+    output("Done writing statistics to the file")
+    f_handle.close()                                      ## close the file
+
+  ## run checking functions and write results to file
+  def write_checking_results():
+    n_duplicate_requests = duplicate_requests_count()
+    n_noops = noops_count()
+    f_handle = open(stats_file_name, "a")
+    f_handle.write("************************************************\n")
+    f_handle.write("uniform_integrity: " + str(uniform_integrity()) + "\n")
+    f_handle.write("validity: " + str(validity()) + "\n")
+    f_handle.write("agreement: " + str(agreement()) + "\n")
+    f_handle.write("delivery_agreement: " + str(delivery_agreement()) + "\n")
+    f_handle.write("delivery_ordering: " + str(delivery_ordering()) + "\n")
+    f_handle.write("gi_count_tally: " + str(check_count_tally("global_index")) + "\n")
+    f_handle.write("ldi_count_tally: " + str(check_count_tally("latest_delivered_index")) + "\n")
+    f_handle.write("duplicate_requests_count: " + str(n_duplicate_requests) + "\n")
+    f_handle.write("noops_count: " + str(n_noops) + "\n")
+    f_handle.write("************************************************\n")
+    f_handle.close()
+
+  def log_data(data_type, f_handle):
+    f_handle.write("************************************************\n")
+    f_handle.write("*********** " + data_type +" ***********\n")
+    for n in range(n_nodes):
+      val = max(setof(r, received(('sent', ('control','rdma_write_sst', _n, _data_type, r, _, _), _, _))) or [0])
+      to_write = "node: " + str(n) + " => " + str(val) + "\n"
+      f_handle.write(to_write)
+
+  def receive(msg= ('sent', ('view_change', m, e), t, lc), from_=p):
+    output("received view_change message in checker with len(m): ", len(m), " and from: ", p)    
+    if (len(setof(n, received(('sent', ('view_change', _, _e), _, _), from_=n))) == len(m)): ### check if all the nodes propose the same members
+      mem = [x for x in next(iter(setof(m, received(('sent', ('view_change', m, _e), _, _)))))]
+      self.ep_nodes[e] = mem
+      output("current ep_nodes: ", ep_nodes)
+
+  def receive(msg= ('sent', ('response', tid, _), c, _), from_=n1):
+    if some(n in ep_nodes[max(ep_nodes.keys())], has=len(setof((tid, c), received(('sent', ('response', tid, _), c, _), from_=_n))) == num_requests):
+      self.is_processing_done = True
+
+def main():
+  config(channel is {fifo, reliable}, clock is lamport, handling = 'all')
+  system_config = read_config("system_config.txt")
+
+  for conf in system_config:    
+    num_nodes = conf['num_nodes']       ## number of nodes in the system
+    num_clients = conf['num_clients']
+    n_req_per_client = conf['num_requests'] ## number of requests to be served
+    num_requests = n_req_per_client * num_clients
+    window_size = conf['window_size']   ## window_size, number of concurrent pending request per node
+    c_timeout = conf['c_timeout']       ## c_timeout, client's timeout before retry of requests
+    n_reps = conf['n_reps']             ## number of repetitions to calculate the metrics
+    test_failure = conf['test_failure'] ## boolean, if a failure needs to be injected in the system
+    max_msg_size = 1000                 ## max message size, in number of bytes/
+    c_reps = 0                          ## current count of the rep
+    stats_file_name = os.path.join("statistics", time.strftime("%Y%m%d-%H%M%S") + "_" + str(num_requests) + "_" + 
+                            str(num_nodes) + "_" + str(window_size) + "_" + str(test_failure)[0] + ".txt")
+    f = open(stats_file_name, "w")
+    f.write("############################################\n" +
+            "num_requests: " + str(num_requests) + "\n" + "num_nodes: " + str(num_nodes) + "\n" +           
+            "num_clients: " + str(num_clients) + "\n" +"window_size: " + str(window_size) + "\n" + 
+            "c_timeout: " + str(c_timeout) + "\n" + "test_failure: " + str(test_failure) + "\n" + 
+            "n_reps: " + str(n_reps) + "\n" +
+            "############################################\n")
+    f.close()
+
+    throughputs = []
+    avg_times = 0
+    while c_reps < n_reps:
+      nodes = new(NodeX, num=num_nodes)
+      clients = new(LB, num=num_clients)
+      checker = new (Checker)
+      state = []                                ## state to which clients commands are applied to
+      for (rank, node) in enumerate(nodes):
+        setup(node, (checker, list(nodes), rank, window_size, max_msg_size, state))
+      setup(clients, (list(nodes), n_req_per_client, c_timeout, window_size, test_failure, False))
+      setup(checker, (list(nodes), list(clients), stats_file_name, num_requests, test_failure))
+      start(checker)
+      start(clients)
+      start(nodes)
+      await(c_timeout)                          ## await for c_timeout before denoting the start time ### review
+      t11 = time.time()
+      await(each(c in clients, has=some(received(('done'), from_=_c))))
+      t22 = time.time()
+      avg_times += t22 - t11
+      await(received(('done'), from_ =checker)) ## wait to receive 'done' from the checker/sim process
+      throughputs.append(round((num_requests)/(t22 - t11), 5))
+      end(nodes)
+      end(clients)
+      end(checker)
+      c_reps +=1
+
+    run_times = []
+    failures = 0
+    for metrics in listof(metric, received(("metrics", metric))):
+      for metric in metrics:
+        if metric.success:
+          run_times.append(metric.run_end_time - metric.run_start_time)
+        else:
+          failures += 1
+
+    avg_times = round(avg_times/n_reps, 5)
+    AVG_latency = round(sum(run_times)/len(run_times), 5)
+    AVG_throughput = round(sum(throughputs)/len(throughputs), 5)
+    f = open(stats_file_name, "a")
+    f.write("avg_times: " + str(avg_times) + "\n")
+    f.write("AVG latency: " + str(AVG_latency) + "\n")
+    f.write("AVG throughput: " + str(AVG_throughput) + "\n")
+    f.write("FAILURES: " + str(failures) + "\n")
+    f.close()
+
+## Reads config from the file pointed to by 'file_name'
+def read_config(file_name):
+  with open(file_name) as f:
+    data = f.read()
+    return(json.loads(data))  ## return the json formatted string of the config

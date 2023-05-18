@@ -1,0 +1,75 @@
+############################################
+num_requests: 5000
+num_nodes: 5
+window_size: 100
+test_failure: False
+n_reps: 2
+############################################
+************************************************
+node: 0 , received_num: 1009
+node: 1 , received_num: 1009
+node: 2 , received_num: 1009
+node: 3 , received_num: 1009
+node: 4 , received_num: 1009
+node: 0 , latest_received_index: 1009
+node: 1 , latest_received_index: 1009
+node: 2 , latest_received_index: 1009
+node: 3 , latest_received_index: 1009
+node: 4 , latest_received_index: 1009
+node: 0 , global_index: 5045
+node: 1 , global_index: 5041
+node: 2 , global_index: 5043
+node: 3 , global_index: 5043
+node: 4 , global_index: 5045
+node: 0 , latest_delivered_index: 5041
+node: 1 , latest_delivered_index: 5041
+node: 2 , latest_delivered_index: 5041
+node: 3 , latest_delivered_index: 5041
+node: 4 , latest_delivered_index: 5041
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 1009
+node: 1 , received_num: 1009
+node: 2 , received_num: 1009
+node: 3 , received_num: 1009
+node: 4 , received_num: 1009
+node: 0 , latest_received_index: 1009
+node: 1 , latest_received_index: 1009
+node: 2 , latest_received_index: 1009
+node: 3 , latest_received_index: 1009
+node: 4 , latest_received_index: 1009
+node: 0 , global_index: 5045
+node: 1 , global_index: 5046
+node: 2 , global_index: 5042
+node: 3 , global_index: 5046
+node: 4 , global_index: 5046
+node: 0 , latest_delivered_index: 5042
+node: 1 , latest_delivered_index: 5042
+node: 2 , latest_delivered_index: 5042
+node: 3 , latest_delivered_index: 5042
+node: 4 , latest_delivered_index: 5042
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+AVG cpu_times: 45.71923
+AVG run_times: 92.97336
+AVG throughput: 0.30124
+FAILURES: 0

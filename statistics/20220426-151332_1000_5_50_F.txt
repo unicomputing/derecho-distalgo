@@ -1,0 +1,203 @@
+############################################
+num_requests: 1000
+num_nodes: 5
+window_size: 50
+test_failure: False
+n_reps: 6
+############################################
+************************************************
+node: 0 , received_num: 201
+node: 1 , received_num: 201
+node: 2 , received_num: 201
+node: 3 , received_num: 201
+node: 4 , received_num: 201
+node: 0 , latest_received_index: 201
+node: 1 , latest_received_index: 201
+node: 2 , latest_received_index: 201
+node: 3 , latest_received_index: 201
+node: 4 , latest_received_index: 201
+node: 0 , global_index: 1007
+node: 1 , global_index: 1007
+node: 2 , global_index: 1007
+node: 3 , global_index: 1007
+node: 4 , global_index: 1007
+node: 0 , latest_delivered_index: 1007
+node: 1 , latest_delivered_index: 1007
+node: 2 , latest_delivered_index: 1007
+node: 3 , latest_delivered_index: 1007
+node: 4 , latest_delivered_index: 1007
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 202
+node: 1 , received_num: 202
+node: 2 , received_num: 202
+node: 3 , received_num: 202
+node: 4 , received_num: 202
+node: 0 , latest_received_index: 202
+node: 1 , latest_received_index: 202
+node: 2 , latest_received_index: 202
+node: 3 , latest_received_index: 202
+node: 4 , latest_received_index: 202
+node: 0 , global_index: 1011
+node: 1 , global_index: 1011
+node: 2 , global_index: 1011
+node: 3 , global_index: 1011
+node: 4 , global_index: 1011
+node: 0 , latest_delivered_index: 1011
+node: 1 , latest_delivered_index: 1011
+node: 2 , latest_delivered_index: 1011
+node: 3 , latest_delivered_index: 1011
+node: 4 , latest_delivered_index: 1011
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 201
+node: 1 , received_num: 201
+node: 2 , received_num: 201
+node: 3 , received_num: 201
+node: 4 , received_num: 201
+node: 0 , latest_received_index: 201
+node: 1 , latest_received_index: 201
+node: 2 , latest_received_index: 201
+node: 3 , latest_received_index: 201
+node: 4 , latest_received_index: 201
+node: 0 , global_index: 1009
+node: 1 , global_index: 1009
+node: 2 , global_index: 1009
+node: 3 , global_index: 1009
+node: 4 , global_index: 1009
+node: 0 , latest_delivered_index: 1009
+node: 1 , latest_delivered_index: 1009
+node: 2 , latest_delivered_index: 1009
+node: 3 , latest_delivered_index: 1009
+node: 4 , latest_delivered_index: 1009
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 201
+node: 1 , received_num: 201
+node: 2 , received_num: 201
+node: 3 , received_num: 201
+node: 4 , received_num: 201
+node: 0 , latest_received_index: 201
+node: 1 , latest_received_index: 201
+node: 2 , latest_received_index: 201
+node: 3 , latest_received_index: 201
+node: 4 , latest_received_index: 201
+node: 0 , global_index: 1005
+node: 1 , global_index: 1005
+node: 2 , global_index: 1005
+node: 3 , global_index: 1005
+node: 4 , global_index: 1005
+node: 0 , latest_delivered_index: 1005
+node: 1 , latest_delivered_index: 1005
+node: 2 , latest_delivered_index: 1005
+node: 3 , latest_delivered_index: 1005
+node: 4 , latest_delivered_index: 1005
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 205
+node: 1 , received_num: 205
+node: 2 , received_num: 205
+node: 3 , received_num: 205
+node: 4 , received_num: 205
+node: 0 , latest_received_index: 205
+node: 1 , latest_received_index: 205
+node: 2 , latest_received_index: 205
+node: 3 , latest_received_index: 205
+node: 4 , latest_received_index: 205
+node: 0 , global_index: 1026
+node: 1 , global_index: 1026
+node: 2 , global_index: -1
+node: 3 , global_index: 1026
+node: 4 , global_index: 1026
+node: 0 , latest_delivered_index: 1026
+node: 1 , latest_delivered_index: 1026
+node: 2 , latest_delivered_index: 1026
+node: 3 , latest_delivered_index: 1026
+node: 4 , latest_delivered_index: 1026
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+************************************************
+node: 0 , received_num: 201
+node: 1 , received_num: 201
+node: 2 , received_num: 201
+node: 3 , received_num: 201
+node: 4 , received_num: 201
+node: 0 , latest_received_index: 201
+node: 1 , latest_received_index: 201
+node: 2 , latest_received_index: 201
+node: 3 , latest_received_index: 201
+node: 4 , latest_received_index: 201
+node: 0 , global_index: 1007
+node: 1 , global_index: 1007
+node: 2 , global_index: 1007
+node: 3 , global_index: 1007
+node: 4 , global_index: 1007
+node: 0 , latest_delivered_index: 1007
+node: 1 , latest_delivered_index: 1007
+node: 2 , latest_delivered_index: 1007
+node: 3 , latest_delivered_index: 1007
+node: 4 , latest_delivered_index: 1007
+node: 0 , num_installed: 0
+node: 1 , num_installed: 0
+node: 2 , num_installed: 0
+node: 3 , num_installed: 0
+node: 4 , num_installed: 0
+node: 0 , num_committed: 0
+node: 1 , num_committed: 0
+node: 2 , num_committed: 0
+node: 3 , num_committed: 0
+node: 4 , num_committed: 0
+************************************************
+AVG cpu_times: 10.66341
+AVG run_times: 12.59367
+AVG throughput: 0.07379
+FAILURES: 0
