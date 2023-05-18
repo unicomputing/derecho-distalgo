@@ -95,6 +95,7 @@ class SSTRow:
                                          ## the call happens when leader's num_committed > self's num_installed
     self.active = False  # (p.40) ## true when the epoch is active, only used at start  ### not in pseudocode ????use needed?
                             ### could use logical or over sst[my_rank].suspected or even just own suspected ???
+
 class View(): 
   """A view that holds the information of an epoch. An epoch is the duration of a view."""
   def __init__(self, n, epoch=0, leader_rank=0):
@@ -125,7 +126,7 @@ class Node(process):
     send(msg_tagged, to= others)                                     ## send the message to other nodes
     
   def receive(msg = (_, 'rdma_write_sst', row, col, val, index, epoch)):  ## _ ignores tag 'data' or 'control'
-    output("received: ", ('rdma_write_sst', row, col, val, index, epoch))
+    output("received: ", ('rdma_write_sst', row, col, val, index, epoch)) ####
     #### ????all besides last line are hacks (and missing sources) and shouldn't be here (right place depends on source)
     if epoch != curr_view.epoch:                  # (p.40) ## if msg is for a different epoch, ignore
       output('received rdma_write_sst msg for different epoch, current: ', curr_view.epoch, ' and msg: ', epoch)
@@ -527,7 +528,8 @@ class Node(process):
                                               
   # (p.38)  ## clean up ragged edge??? due to failure, for non-leader nodes, by updating 'min_latest_received'
   def non_leader_ragged_edge_cleanup():  # non_leader_ragged_edge_cleanup() {
-    leader_rank = curr_view.leader_rank  #   // copy from the leader
+    leader_rank = curr_view.leader_rank  
+                             #   // copy from the leader
     for i in range(len(G)):  #   for (n = 0; n < |G|; ++n) {
       write_sst(my_rank, "min_latest_received", sst[leader_rank].min_latest_received[i], i)
                              #     sst[my_rank].min_latest_received[n] = sst[leader_rank].min_latest_received[n]; }
@@ -670,7 +672,7 @@ def main():
 #     })
   config(channel is {fifo,reliable}, clock is lamport, handling is all)
 
-  num_nodes    = int(sys.argv[1]) if len(sys.argv) > 1 else 5   ## number of nodes in the system
+  num_nodes    = int(sys.argv[1]) if len(sys.argv) > 1 else 3   ## number of nodes in the system
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10  ## number of requests from applications
   nreps        = int(sys.argv[3]) if len(sys.argv) > 3 else 1   ## number of repetitions, for calculating metrics
   msg_size     = int(sys.argv[4]) if len(sys.argv) > 4 else 1   ## size of request messages
@@ -691,7 +693,7 @@ def main():
     start(sim)
     await(received(('done'), from_=sim))  ## wait to receive 'done' from sim
 
-    throughputs.append((time.time() - t1)/num_requests)
+    throughputs.append(round(num_requests/(time.time() - t1)))
     print("--------- time:", time.time() - t1)
     end(sim)
     end(nodes)
