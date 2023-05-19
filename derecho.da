@@ -676,7 +676,7 @@ def main():
   num_requests = int(sys.argv[2]) if len(sys.argv) > 2 else 10  ## number of requests from applications
   nreps        = int(sys.argv[3]) if len(sys.argv) > 3 else 1   ## number of repetitions, for calculating metrics
   msg_size     = int(sys.argv[4]) if len(sys.argv) > 4 else 1   ## size of request messages
-  window_size  = int(sys.argv[5]) if len(sys.argv) > 5 else 5   ## window size for vector of slots ??? use small for tests
+  window_size  = int(sys.argv[5]) if len(sys.argv) > 5 else 10   ## window size for vector of slots ??? use small for tests
   max_msg_size = 10                                             ## max message size, in number of bytes
   test_failure = False                                          ## whether to test a failure scenario
 
@@ -700,7 +700,6 @@ def main():
 
   cpu_times = []
   run_times = []
-  failures = 0
   total_runs = 0
   for metrics in listof(metric, received(("metrics", metric))):
     for metric in metrics:
@@ -708,13 +707,10 @@ def main():
       if metric.success:
         cpu_times.append(metric.cpu_end_time - metric.cpu_start_time)
         run_times.append(metric.run_end_time - metric.run_start_time)
-      else:
-        failures += 1
 
   output("AVG cpu_times", round(sum(cpu_times)/len(cpu_times), 5))
   output("AVG run_times", round(sum(run_times)/len(run_times), 5))
   output("AVG throughput", round(sum(throughputs)/len(throughputs), 5))
-  output("FAILURES", failures)
 
 #### Use a python script to remove (1) any line containing "####",
 #### (2) rest of any line starting with "????", (3) "???", 
